@@ -4,25 +4,38 @@ struct ReaderWorkspaceView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
 
     var body: some View {
-        PersistedHSplitView(
-            storageKey: "reader",
-            panes: [
-                PersistedSplitPane(
-                    minWidth: 160,
-                    defaultWidth: 160,
-                    maxWidth: 320,
-                    view: AnyView(SectionRailView().environmentObject(workspace))
-                ),
-                PersistedSplitPane(
-                    minWidth: 360,
-                    defaultWidth: 720,
-                    maxWidth: nil,
-                    view: AnyView(FilingReaderView().environmentObject(workspace))
+        Group {
+            if workspace.hasReaderContent && shouldShowRail {
+                PersistedHSplitView(
+                    storageKey: "reader",
+                    panes: [
+                        PersistedSplitPane(
+                            minWidth: 160,
+                            defaultWidth: 160,
+                            maxWidth: 320,
+                            view: AnyView(SectionRailView().environmentObject(workspace))
+                        ),
+                        PersistedSplitPane(
+                            minWidth: 360,
+                            defaultWidth: 720,
+                            maxWidth: nil,
+                            view: AnyView(FilingReaderView().environmentObject(workspace))
+                        )
+                    ]
                 )
-            ]
-        )
+            } else if workspace.hasReaderContent {
+                FilingReaderView()
+                    .environmentObject(workspace)
+            } else {
+                Color.clear
+            }
+        }
         .frame(maxHeight: .infinity)
         .background(CTTheme.canvas)
+    }
+
+    private var shouldShowRail: Bool {
+        !workspace.sections.isEmpty
     }
 }
 
@@ -31,12 +44,6 @@ struct SectionRailView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: CTTheme.Spacing.md) {
-            Text("Sections")
-                .font(CTTheme.Typography.label)
-                .foregroundStyle(CTTheme.ink)
-            Text("datamule standardized keys")
-                .font(CTTheme.Typography.caption)
-                .foregroundStyle(CTTheme.muted)
             VStack(spacing: CTTheme.Spacing.xs) {
                 ForEach(workspace.sections) { section in
                     Button {
@@ -47,19 +54,11 @@ struct SectionRailView: View {
                                 .font(CTTheme.Typography.body)
                                 .foregroundStyle(CTTheme.ink)
                                 .lineLimit(2)
-                            HStack {
-                                Text(section.key)
-                                Spacer()
-                                if section.estimatedWordCount > 0 {
-                                    Text("~\(section.estimatedWordCount)")
-                                }
-                            }
-                            .font(CTTheme.Typography.caption)
-                            .foregroundStyle(CTTheme.muted)
                         }
                         .padding(CTTheme.Spacing.sm)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(workspace.selectedSectionKey == section.key ? CTTheme.cream : Color.clear)
+                        .contentShape(Rectangle())
                         .clipShape(RoundedRectangle(cornerRadius: CTTheme.Radius.md, style: .continuous))
                     }
                     .buttonStyle(.plain)
@@ -68,7 +67,7 @@ struct SectionRailView: View {
             Spacer()
         }
         .padding(CTTheme.Spacing.lg)
-        .background(CTTheme.surfaceSoft)
+        .background(CTTheme.canvas)
     }
 }
 
@@ -76,36 +75,75 @@ struct FilingReaderView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
 
     var body: some View {
-        Group {
-            if workspace.isLoadingReader {
-                ProgressView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if workspace.readerMode == .original, !workspace.readerHTML.isEmpty {
-                FilingWebView(html: workspace.readerHTML, baseURL: workspace.readerBaseURL)
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: CTTheme.Spacing.xl) {
-                        CTCard(background: CTTheme.surfaceDark) {
-                            VStack(alignment: .leading, spacing: CTTheme.Spacing.md) {
-                                Text(workspace.selectedSection?.title ?? workspace.selectedDocument?.description ?? "Reader")
-                                    .font(CTTheme.Typography.displayMedium)
-                                    .foregroundStyle(.white)
-                                Text(workspace.selectedDocument?.filename ?? "Select a filing document")
-                                    .font(CTTheme.Typography.body)
-                                    .foregroundStyle(.white.opacity(0.75))
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(spacing: 0) {
+            if !workspace.readerAttachments.isEmpty {
+                AttachmentStripView()
+                    .environmentObject(workspace)
+                Hairline()
+            }
+            Group {
+                if workspace.isDocumentLoading {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .controlSize(.large)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let pdfData = workspace.readerPDFData {
+                    FilingPDFView(data: pdfData)
+                } else if !workspace.readerDisplayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: CTTheme.Spacing.xl) {
+                            Text(workspace.readerDisplayText)
+                                .font(CTTheme.Typography.reader)
+                                .foregroundStyle(CTTheme.body)
+                                .lineSpacing(6)
+                                .textSelection(.enabled)
                         }
-                        Text(workspace.readerMode == .markdown ? "```text\n\(workspace.readerDisplayText)\n```" : workspace.readerDisplayText)
-                            .font(.system(size: 15, weight: .regular, design: workspace.readerMode == .markdown ? .monospaced : .serif))
-                            .foregroundStyle(CTTheme.body)
-                            .lineSpacing(6)
-                            .textSelection(.enabled)
+                        .padding(CTTheme.Spacing.xl)
+                        .frame(maxWidth: 760, alignment: .leading)
                     }
-                    .padding(CTTheme.Spacing.xl)
-                    .frame(maxWidth: 760, alignment: .leading)
+                } else {
+                    Color.clear
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+}
+
+private struct AttachmentStripView: View {
+    @EnvironmentObject private var workspace: WorkspaceStore
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: CTTheme.Spacing.xs) {
+                ForEach(workspace.readerAttachments) { document in
+                    Button {
+                        workspace.selectDocument(document)
+                    } label: {
+                        HStack(spacing: CTTheme.Spacing.xs) {
+                            Image(systemName: document.isPDF ? "doc.richtext" : "doc.text")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(workspace.selectedDocumentID == document.id ? CTTheme.ink : CTTheme.muted)
+                            Text(document.displayTitle)
+                                .font(CTTheme.Typography.caption)
+                                .foregroundStyle(CTTheme.ink)
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, CTTheme.Spacing.sm)
+                        .padding(.vertical, CTTheme.Spacing.xs)
+                        .background(workspace.selectedDocumentID == document.id ? CTTheme.cream : CTTheme.surfaceSoft)
+                        .clipShape(RoundedRectangle(cornerRadius: CTTheme.Radius.sm, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: CTTheme.Radius.sm, style: .continuous)
+                                .stroke(workspace.selectedDocumentID == document.id ? CTTheme.link : CTTheme.hairline, lineWidth: 1)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, CTTheme.Spacing.lg)
+            .padding(.vertical, CTTheme.Spacing.sm)
+        }
+        .background(CTTheme.canvas)
     }
 }

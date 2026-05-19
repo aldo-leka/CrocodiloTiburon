@@ -3,6 +3,10 @@ import SwiftUI
 
 @MainActor
 final class WorkspaceStore: ObservableObject {
+    private static let excludeOwnershipReportsKey = "filings.excludeOwnershipReports"
+    private static let ownershipReportForms: Set<String> = ["3", "3/A", "4", "4/A", "5", "5/A"]
+    private static let nonOwnershipSearchForms = ["-0", "-3", "-3/A", "-4", "-4/A", "-5", "-5/A"]
+
     @Published var companies: [Company] = []
     @Published var filings: [Filing] = []
     @Published var documents: [FilingDocument] = []
@@ -13,15 +17,14 @@ final class WorkspaceStore: ObservableObject {
     @Published var selectedDocumentID: FilingDocument.ID?
     @Published var selectedSectionKey: String = ""
     @Published var query: String = ""
-    @Published var readerMode: ReaderMode = .cleanText
     @Published var shouldFocusSearch: Bool = false
     @Published var isLoadingSEC: Bool = false
     @Published var isLoadingReader: Bool = false
+    @Published var isLoadingDocuments: Bool = false
     @Published var statusMessage: String = ""
     @Published var errorMessage: String?
     @Published var readerText: String = ""
-    @Published var readerHTML: String = ""
-    @Published var readerBaseURL: URL?
+    @Published var readerPDFData: Data?
     @Published var isEditingNote: Bool = false
     @Published var editingNoteID: ResearchNote.ID?
     @Published var draftNoteTitle: String = ""
@@ -29,6 +32,7 @@ final class WorkspaceStore: ObservableObject {
     @Published var draftNoteTags: String = ""
     @Published var selectedCompanyProfileSummary: String = ""
     @Published var isLoadingCompanyProfile: Bool = false
+    @Published var excludeOwnershipReports: Bool = UserDefaults.standard.object(forKey: excludeOwnershipReportsKey) as? Bool ?? true
 
     private let database: LocalDatabase?
     private var datamuleBridge = DatamuleBridge()
@@ -64,11 +68,7 @@ final class WorkspaceStore: ObservableObject {
         self.database = loadedDatabase
 
         if let database = loadedDatabase {
-            let cacheURL = URL(fileURLWithPath: database.path)
-                .deletingLastPathComponent()
-                .appendingPathComponent("SEC", isDirectory: true)
-            try? FileManager.default.createDirectory(at: cacheURL, withIntermediateDirectories: true)
-            datamuleBridge = DatamuleBridge(cacheURL: cacheURL)
+            configureDatamuleCache(databasePath: database.path)
             do {
                 try reloadFromDatabase(preferLastOpenedCompany: true)
                 prepareSelectedCompanyProfileLoad(selectionVersion: companySelectionVersion)
@@ -99,8 +99,32 @@ final class WorkspaceStore: ObservableObject {
         sections.first(where: { $0.key == selectedSectionKey })
     }
 
+    var readerDocuments: [FilingDocument] {
+        documents.filter(\.isReaderDisplayable)
+    }
+
+    var readerAttachments: [FilingDocument] {
+        readerDocuments.filter { !$0.isMainDocument }
+    }
+
     var readerDisplayText: String {
         readerText.trimmingCharacters(in: .whitespacesAndNewlines) == "None" ? "" : readerText
+    }
+
+    var isDocumentLoading: Bool {
+        isLoadingReader || isLoadingDocuments
+    }
+
+    var isAppLoading: Bool {
+        isLoadingSEC || isLoadingReader || isLoadingDocuments || isLoadingCompanyProfile
+    }
+
+    var hasReaderContent: Bool {
+        isDocumentLoading
+            || readerPDFData != nil
+            || !readerDocuments.isEmpty
+            || !sections.isEmpty
+            || !readerDisplayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var filteredCompanies: [Company] {
@@ -114,7 +138,10 @@ final class WorkspaceStore: ObservableObject {
 
     var selectedCompanyFilings: [Filing] {
         guard let selectedCompanyID else { return [] }
-        return filings.filter { $0.companyID == selectedCompanyID }
+        return filings.filter { filing in
+            filing.companyID == selectedCompanyID
+                && (!excludeOwnershipReports || !Self.isOwnershipReport(filing.form))
+        }
             .sorted { $0.filingDate > $1.filingDate }
     }
 
@@ -153,7 +180,7 @@ final class WorkspaceStore: ObservableObject {
 
         selectedCompanyID = company.id
         touchCompany(company.id)
-        let firstFiling = filings.first(where: { $0.companyID == company.id })
+        let firstFiling = selectedCompanyFilings.first
         selectedFilingID = firstFiling?.id
         loadDocumentsForSelectedFiling()
         resetReaderPrompt()
@@ -169,13 +196,24 @@ final class WorkspaceStore: ObservableObject {
         loadDocumentsForSelectedFiling()
         resetReaderPrompt()
 
-        if documents.isEmpty {
+        if selectedDocumentID != nil {
+            isLoadingReader = true
+            Task { await loadSelectedDocumentContent() }
+        } else {
+            isLoadingDocuments = true
             Task { await refreshSelectedFilingDocuments() }
         }
     }
 
     func selectDocument(_ document: FilingDocument) {
-        selectedDocumentID = document.id
+        if selectedDocumentID == document.id,
+           !document.isMainDocument,
+           let mainDocument = preferredReaderDocument(in: documents) {
+            selectedDocumentID = mainDocument.id
+        } else {
+            selectedDocumentID = document.id
+        }
+        isLoadingReader = true
         if let filing = selectedFiling {
             markFilingOpened(filing)
         }
@@ -200,9 +238,13 @@ final class WorkspaceStore: ObservableObject {
         }
 
         isLoadingSEC = true
+        isLoadingDocuments = true
         errorMessage = nil
         statusMessage = ""
-        defer { isLoadingSEC = false }
+        defer {
+            isLoadingSEC = false
+            isLoadingDocuments = false
+        }
 
         do {
             let response = try await datamuleBridge.tickers()
@@ -214,6 +256,22 @@ final class WorkspaceStore: ObservableObject {
             errorMessage = error.localizedDescription
             statusMessage = "Could not load datamule ticker universe."
         }
+    }
+
+    func setExcludeOwnershipReports(_ shouldExclude: Bool) {
+        guard excludeOwnershipReports != shouldExclude else { return }
+        excludeOwnershipReports = shouldExclude
+        UserDefaults.standard.set(shouldExclude, forKey: Self.excludeOwnershipReportsKey)
+
+        if let currentFilingID = selectedFilingID,
+           !selectedCompanyFilings.contains(where: { $0.id == currentFilingID }) {
+            selectedFilingID = selectedCompanyFilings.first?.id
+            loadDocumentsForSelectedFiling()
+            resetReaderPrompt()
+        }
+
+        companyRefreshTask?.cancel()
+        refreshSelectedCompanyFilingsIfNeeded(selectionVersion: companySelectionVersion)
     }
 
     func refreshSelectedCompanyFilings(
@@ -231,6 +289,7 @@ final class WorkspaceStore: ObservableObject {
         do {
             let response = try await datamuleBridge.search(
                 ticker: company.ticker,
+                forms: excludeOwnershipReports ? Self.nonOwnershipSearchForms : nil,
                 start: "2001-01-01",
                 end: searchEndDate()
             )
@@ -301,7 +360,7 @@ final class WorkspaceStore: ObservableObject {
             try reloadFromDatabase(
                 preferredCompanyID: company.id,
                 preferredFilingID: filing.id,
-                preferredDocumentID: fetchedDocuments.first?.id ?? selectedDocumentID
+                preferredDocumentID: selectedDocumentID ?? preferredReaderDocument(in: fetchedDocuments)?.id
             )
             statusMessage = ""
 
@@ -330,7 +389,6 @@ final class WorkspaceStore: ObservableObject {
         let expectedReaderLoadVersion = readerLoadVersion
         let expectedFilingID = filing.id
         let expectedDocumentID = document.id
-        let expectedReaderMode = readerMode
 
         isLoadingReader = true
         errorMessage = nil
@@ -338,30 +396,15 @@ final class WorkspaceStore: ObservableObject {
         defer { isLoadingReader = false }
 
         do {
-            let loaded = try await datamuleBridge.document(
-                accession: filing.accession,
-                documentType: document.type,
-                filename: document.filename,
-                includeText: true
-            )
-
-            guard shouldApplyReaderResult(
-                filingID: expectedFilingID,
-                documentID: expectedDocumentID,
-                requestVersion: expectedReaderLoadVersion
-            ) else {
-                return
-            }
-
-            readerHTML = cleanReaderText(loaded.html)
-            readerBaseURL = nil
-            readerText = cleanReaderText(loaded.text ?? loaded.markdown)
-
-            if let parsedSections = try? await datamuleBridge.sections(
-                accession: filing.accession,
-                documentType: document.type,
-                filename: document.filename
-            ) {
+            if document.isPDF {
+                let exported = try await datamuleBridge.exportDocument(
+                    accession: filing.accession,
+                    documentType: document.type,
+                    filename: document.filename
+                )
+                guard let path = exported.path else {
+                    throw DatamuleBridgeError.processFailed("Datamule did not return an exported document path.")
+                }
                 guard shouldApplyReaderResult(
                     filingID: expectedFilingID,
                     documentID: expectedDocumentID,
@@ -369,26 +412,20 @@ final class WorkspaceStore: ObservableObject {
                 ) else {
                     return
                 }
-                sections = readerSections(from: parsedSections.sections)
-                if let currentSection = sections.first(where: { $0.key == selectedSectionKey }) {
-                    selectedSectionKey = currentSection.key
-                } else {
-                    selectedSectionKey = sections.first?.key ?? ""
-                }
-            } else {
+                let exportedURL = URL(fileURLWithPath: path)
+                readerPDFData = try Data(contentsOf: exportedURL)
+                try? FileManager.default.removeItem(at: exportedURL)
+                readerText = ""
                 sections = []
                 selectedSectionKey = ""
-            }
+            } else {
+                let loaded = try await datamuleBridge.document(
+                    accession: filing.accession,
+                    documentType: document.type,
+                    filename: document.filename,
+                    includeText: true
+                )
 
-            if let section = selectedSection,
-               let sectionText = try? await datamuleBridge.section(
-                   accession: filing.accession,
-                   documentType: document.type,
-                   filename: document.filename,
-                   section: section.lookupKey,
-                   format: expectedReaderMode == .markdown ? "markdown" : "text"
-               ),
-               !sectionText.sections.isEmpty {
                 guard shouldApplyReaderResult(
                     filingID: expectedFilingID,
                     documentID: expectedDocumentID,
@@ -396,7 +433,51 @@ final class WorkspaceStore: ObservableObject {
                 ) else {
                     return
                 }
-                readerText = cleanReaderText(sectionText.sections.joined(separator: "\n\n"))
+
+                readerPDFData = nil
+                readerText = cleanReaderText(loaded.text)
+
+                if let parsedSections = try? await datamuleBridge.sections(
+                    accession: filing.accession,
+                    documentType: document.type,
+                    filename: document.filename
+                ) {
+                    guard shouldApplyReaderResult(
+                        filingID: expectedFilingID,
+                        documentID: expectedDocumentID,
+                        requestVersion: expectedReaderLoadVersion
+                    ) else {
+                        return
+                    }
+                    sections = readerSections(from: parsedSections.sections)
+                    if let currentSection = sections.first(where: { $0.key == selectedSectionKey }) {
+                        selectedSectionKey = currentSection.key
+                    } else {
+                        selectedSectionKey = sections.first?.key ?? ""
+                    }
+                } else {
+                    sections = []
+                    selectedSectionKey = ""
+                }
+
+                if let section = selectedSection,
+                   let sectionText = try? await datamuleBridge.section(
+                       accession: filing.accession,
+                       documentType: document.type,
+                       filename: document.filename,
+                       section: section.lookupKey,
+                       format: "text"
+                   ),
+                   !sectionText.sections.isEmpty {
+                    guard shouldApplyReaderResult(
+                        filingID: expectedFilingID,
+                        documentID: expectedDocumentID,
+                        requestVersion: expectedReaderLoadVersion
+                    ) else {
+                        return
+                    }
+                    readerText = cleanReaderText(sectionText.sections.joined(separator: "\n\n"))
+                }
             }
 
             statusMessage = ""
@@ -408,8 +489,12 @@ final class WorkspaceStore: ObservableObject {
             ) else {
                 return
             }
+            readerPDFData = nil
+            readerText = ""
+            sections = []
+            selectedSectionKey = ""
             errorMessage = error.localizedDescription
-            statusMessage = "Could not load datamule text for \(document.filename)."
+            statusMessage = "Could not load datamule document for \(document.filename)."
         }
     }
 
@@ -531,9 +616,78 @@ final class WorkspaceStore: ObservableObject {
 
         selectedDocumentID = previousDocumentID.flatMap { id in
             documents.contains(where: { $0.id == id }) ? id : nil
-        } ?? documents.first?.id
+        } ?? preferredReaderDocument(in: documents)?.id
 
         sections = []
+    }
+
+    private func configureDatamuleCache(databasePath: String) {
+        do {
+            let cacheURL = try Self.secCacheURL()
+            let exportURL = (try? Self.temporaryDocumentExportURL())
+                ?? Self.fallbackDocumentExportURL(cacheURL: cacheURL)
+            Self.migrateLegacyApplicationSupportSECCache(databasePath: databasePath, to: cacheURL)
+            datamuleBridge = DatamuleBridge(cacheURL: cacheURL, documentExportURL: exportURL)
+        } catch {
+            errorMessage = "Could not prepare SEC cache. \(error.localizedDescription)"
+        }
+    }
+
+    private static func secCacheURL() throws -> URL {
+        let fileManager = FileManager.default
+        let cacheURL = try fileManager.url(
+            for: .cachesDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        .appendingPathComponent("CrocodiloTiburon", isDirectory: true)
+        .appendingPathComponent("SEC", isDirectory: true)
+
+        try fileManager.createDirectory(at: cacheURL, withIntermediateDirectories: true)
+        return cacheURL
+    }
+
+    private static func temporaryDocumentExportURL() throws -> URL {
+        let fileManager = FileManager.default
+        let exportURL = fileManager.temporaryDirectory
+            .appendingPathComponent("CrocodiloTiburon", isDirectory: true)
+            .appendingPathComponent("ExportedDocuments", isDirectory: true)
+
+        if fileManager.fileExists(atPath: exportURL.path) {
+            try? fileManager.removeItem(at: exportURL)
+        }
+        try fileManager.createDirectory(at: exportURL, withIntermediateDirectories: true)
+        return exportURL
+    }
+
+    private static func fallbackDocumentExportURL(cacheURL: URL) -> URL {
+        let exportURL = cacheURL.appendingPathComponent("TransientExports", isDirectory: true)
+        try? FileManager.default.createDirectory(at: exportURL, withIntermediateDirectories: true)
+        return exportURL
+    }
+
+    private static func migrateLegacyApplicationSupportSECCache(databasePath: String, to cacheURL: URL) {
+        let fileManager = FileManager.default
+        let legacyURL = URL(fileURLWithPath: databasePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("SEC", isDirectory: true)
+
+        guard
+            legacyURL.path != cacheURL.path,
+            let legacyFiles = try? fileManager.contentsOfDirectory(
+                at: legacyURL,
+                includingPropertiesForKeys: nil
+            )
+        else { return }
+
+        for legacyFile in legacyFiles where legacyFile.pathExtension == "tar" {
+            let destination = cacheURL.appendingPathComponent(legacyFile.lastPathComponent)
+            guard !fileManager.fileExists(atPath: destination.path) else { continue }
+            try? fileManager.moveItem(at: legacyFile, to: destination)
+        }
+
+        try? fileManager.removeItem(at: legacyURL)
     }
 
     private func mostRecentlyOpenedCompanyID() -> Company.ID? {
@@ -650,7 +804,7 @@ final class WorkspaceStore: ObservableObject {
 
         do {
             documents = try database.fetchDocuments(filingID: selectedFilingID)
-            selectedDocumentID = documents.first?.id
+            selectedDocumentID = preferredReaderDocument(in: documents)?.id
         } catch {
             documents = []
             selectedDocumentID = nil
@@ -658,10 +812,14 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
+    private func preferredReaderDocument(in documents: [FilingDocument]) -> FilingDocument? {
+        documents.first(where: { $0.isMainDocument && $0.isReaderDisplayable })
+            ?? documents.first(where: \.isReaderDisplayable)
+    }
+
     private func resetReaderPrompt() {
         readerLoadVersion += 1
-        readerHTML = ""
-        readerBaseURL = nil
+        readerPDFData = nil
         readerText = ""
         sections = []
         selectedSectionKey = ""
@@ -723,7 +881,7 @@ final class WorkspaceStore: ObservableObject {
                 filename: filename,
                 description: payload.description?.isEmpty == false ? payload.description! : filename,
                 isMainDocument: isMainDocument,
-                parseStatus: isMainDocument || isTextLike(filename) ? .parsed : .notParsed
+                parseStatus: isMainDocument || isReadableDocument(filename) ? .parsed : .notParsed
             )
         }
         .sorted { $0.sequence < $1.sequence }
@@ -768,13 +926,24 @@ final class WorkspaceStore: ObservableObject {
     }
 
     private func markFilingOpened(_ filing: Filing) {
+        let openedAt = Date()
+
+        if let filingIndex = filings.firstIndex(where: { $0.id == filing.id }),
+           filings[filingIndex].readStatus == .unread {
+            filings[filingIndex].readStatus = .opened
+        }
+
+        if let companyIndex = companies.firstIndex(where: { $0.id == filing.companyID }) {
+            companies[companyIndex].lastOpenedAt = openedAt
+            if companies[companyIndex].status == .notStarted {
+                companies[companyIndex].status = .inProgress
+            }
+        }
+
         guard let database else { return }
-        do {
-            try database.markFilingOpened(id: filing.id)
-            try database.markCompanyOpened(id: filing.companyID)
-            try reloadFromDatabase(preferredCompanyID: filing.companyID, preferredFilingID: filing.id, preferredDocumentID: selectedDocumentID)
-        } catch {
-            errorMessage = error.localizedDescription
+        Task.detached {
+            try? database.markFilingOpened(id: filing.id, at: openedAt)
+            try? database.markCompanyOpened(id: filing.companyID, at: openedAt)
         }
     }
 
@@ -847,6 +1016,10 @@ final class WorkspaceStore: ObservableObject {
         return digits.trimmingCharacters(in: CharacterSet(charactersIn: "0"))
     }
 
+    private static func isOwnershipReport(_ form: String) -> Bool {
+        ownershipReportForms.contains(form.uppercased())
+    }
+
     private func companyName(from hits: [DatamuleFilingHit]?, fallback: String) -> String {
         guard let displayName = hits?.compactMap({ $0.displayNames?.first }).first else {
             return fallback
@@ -878,12 +1051,13 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
-    private func isTextLike(_ filename: String) -> Bool {
+    private func isReadableDocument(_ filename: String) -> Bool {
         let lowercased = filename.lowercased()
         return lowercased.hasSuffix(".htm")
             || lowercased.hasSuffix(".html")
             || lowercased.hasSuffix(".txt")
             || lowercased.hasSuffix(".xml")
+            || lowercased.hasSuffix(".pdf")
     }
 
     private func searchEndDate() -> String {
@@ -907,12 +1081,4 @@ final class WorkspaceStore: ObservableObject {
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.date(from: string)
     }
-}
-
-enum ReaderMode: String, CaseIterable, Identifiable {
-    case cleanText = "Clean"
-    case original = "Original"
-    case markdown = "Markdown"
-
-    var id: String { rawValue }
 }

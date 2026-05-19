@@ -60,6 +60,47 @@ struct FilingDocument: Identifiable, Codable, Hashable {
     var parseStatus: ParseStatus
 }
 
+extension FilingDocument {
+    var fileExtension: String {
+        URL(fileURLWithPath: filename).pathExtension.lowercased()
+    }
+
+    var isPDF: Bool {
+        fileExtension == "pdf"
+    }
+
+    var isTextLike: Bool {
+        ["htm", "html", "txt", "xml"].contains(fileExtension)
+    }
+
+    var isReaderDisplayable: Bool {
+        isMainDocument || isPDF || (isTextLike && !isSECResourceFile)
+    }
+
+    var displayTitle: String {
+        let trimmedDescription = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedDescription.isEmpty && trimmedDescription != filename {
+            return trimmedDescription
+        }
+        return type.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? filename : type
+    }
+
+    private var isSECResourceFile: Bool {
+        let lowercasedFilename = filename.lowercased()
+        let lowercasedType = type.lowercased()
+        let lowercasedDescription = description.lowercased()
+        return lowercasedType.hasPrefix("ex-101")
+            || lowercasedType.hasPrefix("ex-104")
+            || lowercasedDescription.contains("xbrl")
+            || ["css", "js", "json", "zip", "xsd", "jpg", "jpeg", "png", "gif"].contains(fileExtension)
+            || lowercasedFilename.range(of: #"^r\d+\.htm$"#, options: .regularExpression) != nil
+            || lowercasedFilename == "filingsummary.xml"
+            || lowercasedFilename == "metalinks.json"
+            || lowercasedFilename == "show.js"
+            || lowercasedFilename == "report.css"
+    }
+}
+
 enum ParseStatus: String, Codable, CaseIterable, Hashable {
     case notParsed = "Not parsed"
     case parsed = "Parsed"

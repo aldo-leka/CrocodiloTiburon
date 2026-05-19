@@ -50,6 +50,7 @@ enum CTTheme {
         static let button = Font.system(size: 16, weight: .medium, design: .default)
         static let body = Font.system(size: 14, weight: .regular, design: .default)
         static let caption = Font.system(size: 13, weight: .medium, design: .default)
+        static let reader = Font.custom("Inter", size: 15)
     }
 }
 

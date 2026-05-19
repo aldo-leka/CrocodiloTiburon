@@ -72,16 +72,22 @@ struct SidebarView: View {
     private var companyList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: CTTheme.Spacing.xs) {
-                    ForEach(workspace.filteredCompanies) { company in
-                        CompanyRow(
-                            company: company,
-                            isSelected: workspace.selectedCompanyID == company.id,
-                            isDirty: workspace.companyHasOpenedFiling(company)
-                        ) {
-                            workspace.selectCompany(company)
+                LazyVStack(spacing: CTTheme.Spacing.xs, pinnedViews: [.sectionHeaders]) {
+                    ForEach(groupedCompanies) { group in
+                        Section {
+                            ForEach(group.companies) { company in
+                                CompanyRow(
+                                    company: company,
+                                    isSelected: workspace.selectedCompanyID == company.id,
+                                    isDirty: workspace.companyHasOpenedFiling(company)
+                                ) {
+                                    workspace.selectCompany(company)
+                                }
+                                .id(company.id)
+                            }
+                        } header: {
+                            CompanyLetterHeader(letter: group.letter)
                         }
-                        .id(company.id)
                     }
                 }
             }
@@ -95,6 +101,22 @@ struct SidebarView: View {
             .onChange(of: workspace.filteredCompanies.count) { _, _ in
                 scrollToSelected(with: proxy)
             }
+        }
+    }
+
+    private var groupedCompanies: [CompanyLetterGroup] {
+        let groups = Dictionary(grouping: workspace.filteredCompanies) { company in
+            let first = company.ticker.first.map(String.init)?.uppercased() ?? "#"
+            return first.range(of: #"^[A-Z]$"#, options: .regularExpression) == nil ? "#" : first
+        }
+
+        return groups.keys.sorted { lhs, rhs in
+            if lhs == "#" { return false }
+            if rhs == "#" { return true }
+            return lhs < rhs
+        }
+        .map { letter in
+            CompanyLetterGroup(letter: letter, companies: groups[letter] ?? [])
         }
     }
 
@@ -112,6 +134,29 @@ struct SidebarView: View {
         DispatchQueue.main.async {
             searchFocused = true
         }
+    }
+}
+
+private struct CompanyLetterGroup: Identifiable {
+    var id: String { letter }
+    let letter: String
+    let companies: [Company]
+}
+
+private struct CompanyLetterHeader: View {
+    let letter: String
+
+    var body: some View {
+        HStack(spacing: CTTheme.Spacing.sm) {
+            Text(letter)
+                .font(CTTheme.Typography.caption)
+                .foregroundStyle(CTTheme.muted)
+                .frame(width: 18, alignment: .leading)
+            Hairline()
+        }
+        .padding(.top, CTTheme.Spacing.sm)
+        .padding(.bottom, CTTheme.Spacing.xs)
+        .background(CTTheme.surfaceSoft)
     }
 }
 
@@ -156,7 +201,6 @@ private struct CompanyRow: View {
 
     private var rowBackground: Color {
         if isSelected { return CTTheme.canvas }
-        if isDirty { return CTTheme.cream.opacity(0.4) }
         return Color.clear
     }
 }

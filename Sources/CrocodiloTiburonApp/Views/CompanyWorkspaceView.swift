@@ -34,7 +34,8 @@ struct CompanyWorkspaceView: View {
     }
 
     private var filingsSection: some View {
-        VStack(spacing: 0) {
+        LazyVStack(spacing: 0) {
+            FilingsToolbar()
             FilingsHeader()
             if !workspace.selectedCompanyFilings.isEmpty {
                 ForEach(workspace.selectedCompanyFilings) { filing in
@@ -47,6 +48,25 @@ struct CompanyWorkspaceView: View {
         }
         .background(CTTheme.surfaceSoft)
         .clipShape(RoundedRectangle(cornerRadius: CTTheme.Radius.lg, style: .continuous))
+    }
+}
+
+private struct FilingsToolbar: View {
+    @EnvironmentObject private var workspace: WorkspaceStore
+
+    var body: some View {
+        HStack {
+            Spacer()
+            Toggle("Exclude Ownership", isOn: Binding(
+                get: { workspace.excludeOwnershipReports },
+                set: { workspace.setExcludeOwnershipReports($0) }
+            ))
+            .toggleStyle(.switch)
+            .font(CTTheme.Typography.caption)
+            .foregroundStyle(CTTheme.muted)
+        }
+        .padding(.horizontal, CTTheme.Spacing.md)
+        .padding(.vertical, CTTheme.Spacing.sm)
     }
 }
 

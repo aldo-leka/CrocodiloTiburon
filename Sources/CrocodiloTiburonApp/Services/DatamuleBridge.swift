@@ -5,12 +5,14 @@ struct DatamuleBridge {
     var pythonExecutable: URL
     var scriptURL: URL
     var cacheURL: URL
+    var documentExportURL: URL?
 
-    init(projectRoot: URL? = nil, cacheURL: URL? = nil) {
+    init(projectRoot: URL? = nil, cacheURL: URL? = nil, documentExportURL: URL? = nil) {
         let root = projectRoot ?? Self.findProjectRoot()
         self.projectRoot = root
         self.scriptURL = root.appendingPathComponent("tools/datamule_bridge.py")
         self.cacheURL = cacheURL ?? root.appendingPathComponent("Data/SEC")
+        self.documentExportURL = documentExportURL
 
         let virtualEnvPython = root.appendingPathComponent(".venv/bin/python")
         if FileManager.default.isExecutableFile(atPath: virtualEnvPython.path) {
@@ -63,6 +65,20 @@ struct DatamuleBridge {
         ]
         if includeText {
             arguments.append("--include-text")
+        }
+        return try await run(arguments: arguments)
+    }
+
+    func exportDocument(accession: String, documentType: String, filename: String) async throws -> DatamuleDocumentFileResponse {
+        var arguments = [
+            "export-document",
+            accession,
+            "--document-type", documentType,
+            "--filename", filename,
+            "--cache-dir", cacheURL.path
+        ]
+        if let documentExportURL {
+            arguments += ["--output-dir", documentExportURL.path]
         }
         return try await run(arguments: arguments)
     }
@@ -299,7 +315,6 @@ struct DatamuleDocumentContentResponse: Decodable, DatamuleBridgeResponse {
     let path: String?
     let html: String?
     let text: String?
-    let markdown: String?
 
     enum CodingKeys: String, CodingKey {
         case ok
@@ -310,7 +325,28 @@ struct DatamuleDocumentContentResponse: Decodable, DatamuleBridgeResponse {
         case path
         case html
         case text
-        case markdown
+    }
+}
+
+struct DatamuleDocumentFileResponse: Decodable, DatamuleBridgeResponse {
+    let ok: Bool
+    let error: String?
+    let accession: String?
+    let documentType: String?
+    let filename: String?
+    let path: String?
+    let contentType: String?
+    let byteCount: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case error
+        case accession
+        case documentType = "document_type"
+        case filename
+        case path
+        case contentType = "content_type"
+        case byteCount = "byte_count"
     }
 }
 

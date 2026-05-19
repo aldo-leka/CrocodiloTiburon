@@ -6,6 +6,10 @@ struct CrocodiloTiburonApp: App {
     @NSApplicationDelegateAdaptor(CrocodiloTiburonAppDelegate.self) private var appDelegate
     @StateObject private var workspace = WorkspaceStore()
 
+    init() {
+        AppFontRegistry.registerFonts()
+    }
+
     var body: some Scene {
         WindowGroup {
             AppShellView()

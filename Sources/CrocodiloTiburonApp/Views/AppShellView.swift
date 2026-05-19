@@ -28,5 +28,22 @@ struct AppShellView: View {
             ]
         )
         .background(CTTheme.canvas)
+        .overlay(alignment: .topTrailing) {
+            if workspace.isAppLoading {
+                GlobalLoadingIndicator()
+                    .padding(CTTheme.Spacing.sm)
+            }
+        }
+    }
+}
+
+private struct GlobalLoadingIndicator: View {
+    var body: some View {
+        ProgressView()
+            .progressViewStyle(.circular)
+            .controlSize(.small)
+            .padding(CTTheme.Spacing.xs)
+            .background(.regularMaterial)
+            .clipShape(Circle())
     }
 }

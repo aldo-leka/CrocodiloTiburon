@@ -12,9 +12,12 @@ import contextlib
 import ast
 import io
 import json
+import mimetypes
 import os
 import re
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +56,13 @@ def import_datamule():
             "datamule is not installed or failed to import. Run: pip install -r requirements.txt. "
             f"Original error: {type(exc).__name__}: {exc}"
         )
+
+
+def clean_internal_cache_artifacts(cache_dir: Path) -> None:
+    for name in ("Extracted", "TransientExports"):
+        artifact = cache_dir / name
+        if artifact.exists() and artifact.is_dir():
+            shutil.rmtree(artifact, ignore_errors=True)
 
 
 def search_datamule_submissions(args: argparse.Namespace) -> list[dict[str, Any]]:
@@ -235,7 +245,9 @@ def submission_to_documents(submission: Any) -> list[dict[str, Any]]:
 
 def cmd_documents(args: argparse.Namespace) -> None:
     _, Portfolio, _ = import_datamule()
-    portfolio = capture_datamule(lambda: Portfolio(str(Path(args.cache_dir).expanduser().resolve())))
+    cache_dir = Path(args.cache_dir).expanduser().resolve()
+    clean_internal_cache_artifacts(cache_dir)
+    portfolio = capture_datamule(lambda: Portfolio(str(cache_dir)))
     matches = []
     for submission in portfolio:
         accession = getattr(submission, "accession", "")
@@ -276,7 +288,9 @@ def normalize_text(value: Any) -> str:
 
 def cmd_document(args: argparse.Namespace) -> None:
     _, Portfolio, _ = import_datamule()
-    portfolio = capture_datamule(lambda: Portfolio(str(Path(args.cache_dir).expanduser().resolve())))
+    cache_dir = Path(args.cache_dir).expanduser().resolve()
+    clean_internal_cache_artifacts(cache_dir)
+    portfolio = capture_datamule(lambda: Portfolio(str(cache_dir)))
     for submission in portfolio:
         accession = getattr(submission, "accession", "")
         if args.accession.replace("-", "") not in accession.replace("-", ""):
@@ -309,6 +323,57 @@ def cmd_document(args: argparse.Namespace) -> None:
             return payload
 
         emit(capture_datamule(load_payload))
+        return
+    fail("No matching cached submission found", code=2)
+
+
+def cmd_export_document(args: argparse.Namespace) -> None:
+    _, Portfolio, _ = import_datamule()
+    cache_dir = Path(args.cache_dir).expanduser().resolve()
+    clean_internal_cache_artifacts(cache_dir)
+    output_root = (
+        Path(args.output_dir).expanduser().resolve()
+        if args.output_dir
+        else Path(tempfile.gettempdir()) / "CrocodiloTiburon" / "ExportedDocuments"
+    )
+    portfolio = capture_datamule(lambda: Portfolio(str(cache_dir)))
+
+    for submission in portfolio:
+        accession = getattr(submission, "accession", "")
+        if args.accession.replace("-", "") not in accession.replace("-", ""):
+            continue
+        document = find_document(submission, args.document_type, args.filename)
+        if document is None:
+            fail("No matching cached document found", code=2)
+
+        filename = getattr(document, "filename", args.filename) or args.filename or "document"
+        safe_filename = Path(filename).name
+        document_dir = output_root / accession.replace("-", "")
+        document_dir.mkdir(parents=True, exist_ok=True)
+        output_path = document_dir / safe_filename
+
+        def write_payload() -> dict[str, Any]:
+            content = getattr(document, "content", b"")
+            if content is None:
+                content = b""
+            elif isinstance(content, str):
+                content = content.encode("utf-8")
+            elif not isinstance(content, bytes):
+                content = bytes(content)
+
+            output_path.write_bytes(content)
+            content_type = mimetypes.guess_type(safe_filename)[0]
+            return {
+                "ok": True,
+                "accession": accession,
+                "document_type": getattr(document, "type", args.document_type),
+                "filename": filename,
+                "path": str(output_path),
+                "content_type": content_type,
+                "byte_count": len(content),
+            }
+
+        emit(capture_datamule(write_payload))
         return
     fail("No matching cached submission found", code=2)
 
@@ -364,7 +429,9 @@ def collect_sections_from_node(node: Any, output: list[dict[str, Any]]) -> None:
 
 def cmd_sections(args: argparse.Namespace) -> None:
     _, Portfolio, _ = import_datamule()
-    portfolio = capture_datamule(lambda: Portfolio(str(Path(args.cache_dir).expanduser().resolve())))
+    cache_dir = Path(args.cache_dir).expanduser().resolve()
+    clean_internal_cache_artifacts(cache_dir)
+    portfolio = capture_datamule(lambda: Portfolio(str(cache_dir)))
     for submission in portfolio:
         accession = getattr(submission, "accession", "")
         if args.accession.replace("-", "") not in accession.replace("-", ""):
@@ -401,7 +468,9 @@ def cmd_sections(args: argparse.Namespace) -> None:
 
 def cmd_section(args: argparse.Namespace) -> None:
     _, Portfolio, _ = import_datamule()
-    portfolio = capture_datamule(lambda: Portfolio(str(Path(args.cache_dir).expanduser().resolve())))
+    cache_dir = Path(args.cache_dir).expanduser().resolve()
+    clean_internal_cache_artifacts(cache_dir)
+    portfolio = capture_datamule(lambda: Portfolio(str(cache_dir)))
     for submission in portfolio:
         accession = getattr(submission, "accession", "")
         if args.accession.replace("-", "") not in accession.replace("-", ""):
@@ -476,6 +545,14 @@ def build_parser() -> argparse.ArgumentParser:
     document.add_argument("--include-text", action="store_true")
     document.add_argument("--include-markdown", action="store_true")
     document.set_defaults(func=cmd_document)
+
+    export_document = sub.add_parser("export-document", help="Export a cached filing document to a real file")
+    export_document.add_argument("accession")
+    export_document.add_argument("--document-type")
+    export_document.add_argument("--filename")
+    export_document.add_argument("--cache-dir", default="Data/SEC")
+    export_document.add_argument("--output-dir")
+    export_document.set_defaults(func=cmd_export_document)
 
     sections = sub.add_parser("sections", help="List parsed sections in a cached document")
     sections.add_argument("accession")
