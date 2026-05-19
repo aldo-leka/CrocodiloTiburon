@@ -1,0 +1,27 @@
+# Xcode / Swift
+.build/
+DerivedData/
+*.xcuserdata/
+*.xcuserstate
+.swiftpm/
+Package.resolved
+
+# macOS
+.DS_Store
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Local SEC cache and database
+Data/
+Cache/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.tar
+
+# Secrets
+.env
+.env.*
