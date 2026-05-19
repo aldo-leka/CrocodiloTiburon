@@ -14,7 +14,7 @@ final class LocalDatabase {
         try migrator.migrate(dbQueue)
     }
 
-    init(url: URL) throws {
+    convenience init(url: URL) throws {
         try self.init(path: url.path)
     }
 

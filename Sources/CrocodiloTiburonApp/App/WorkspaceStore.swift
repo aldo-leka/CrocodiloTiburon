@@ -17,14 +17,21 @@ final class WorkspaceStore: ObservableObject {
     @Published var shouldFocusSearch: Bool = false
 
     init() {
-        companies = SampleData.companies
-        filings = SampleData.filings
-        sections = SampleData.sections
-        notes = SampleData.notes
-        selectedCompanyID = companies.first?.id
-        selectedFilingID = filings.first?.id
-        documents = SampleData.documents(for: filings.first?.id ?? UUID())
-        selectedDocumentID = documents.first?.id
+        let initialCompanies = SampleData.companies
+        let initialFilings = SampleData.filings
+        let initialSections = SampleData.sections
+        let initialNotes = SampleData.notes
+        let initialFilingID = initialFilings.first?.id
+        let initialDocuments = SampleData.documents(for: initialFilingID ?? UUID())
+
+        companies = initialCompanies
+        filings = initialFilings
+        sections = initialSections
+        notes = initialNotes
+        selectedCompanyID = initialCompanies.first?.id
+        selectedFilingID = initialFilingID
+        documents = initialDocuments
+        selectedDocumentID = initialDocuments.first?.id
     }
 
     var selectedCompany: Company? {
