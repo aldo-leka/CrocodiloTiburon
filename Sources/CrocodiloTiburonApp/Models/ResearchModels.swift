@@ -30,6 +30,7 @@ struct Filing: Identifiable, Codable, Hashable {
     var companyID: Company.ID
     var accession: String
     var form: String
+    var filer: String?
     var filingDate: Date
     var reportDate: Date?
     var title: String
@@ -68,6 +69,7 @@ enum ParseStatus: String, Codable, CaseIterable, Hashable {
 struct ReaderSection: Identifiable, Codable, Hashable {
     var id: String { key }
     var key: String
+    var lookupKey: String
     var title: String
     var estimatedWordCount: Int
     var riskLevel: SectionRiskLevel

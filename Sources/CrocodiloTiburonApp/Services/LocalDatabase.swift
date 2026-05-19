@@ -79,7 +79,7 @@ final class LocalDatabase {
             try Row.fetchAll(
                 db,
                 sql: """
-                SELECT id, company_id, accession, form, filing_date, report_date, title, summary,
+                SELECT id, company_id, accession, form, filer, filing_date, report_date, title, summary,
                        primary_document, downloaded_at, read_status, document_count, note_count
                 FROM filings
                 ORDER BY filing_date DESC
@@ -231,6 +231,7 @@ final class LocalDatabase {
                 table.column("company_id", .text).notNull().references("companies", onDelete: .cascade)
                 table.column("accession", .text).notNull().unique()
                 table.column("form", .text).notNull()
+                table.column("filer", .text)
                 table.column("filing_date", .text).notNull()
                 table.column("report_date", .text)
                 table.column("title", .text)
@@ -376,6 +377,19 @@ final class LocalDatabase {
             try db.create(index: "idx_companies_cik", on: "companies", columns: ["cik"], ifNotExists: true)
         }
 
+        migrator.registerMigration("add filing filer") { db in
+            let hasFilerColumn = try Row.fetchAll(db, sql: "PRAGMA table_info(filings)").contains { row in
+                let name: String = row["name"]
+                return name == "filer"
+            }
+
+            if !hasFilerColumn {
+                try db.alter(table: "filings") { table in
+                    table.add(column: "filer", .text)
+                }
+            }
+        }
+
         return migrator
     }
 
@@ -421,12 +435,13 @@ final class LocalDatabase {
         try db.execute(
             sql: """
             INSERT INTO filings
-                (id, company_id, accession, form, filing_date, report_date, title, summary,
+                (id, company_id, accession, form, filer, filing_date, report_date, title, summary,
                  primary_document, document_count, note_count, downloaded_at, read_status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(accession) DO UPDATE SET
                 company_id = excluded.company_id,
                 form = excluded.form,
+                filer = excluded.filer,
                 filing_date = excluded.filing_date,
                 report_date = excluded.report_date,
                 title = excluded.title,
@@ -446,6 +461,7 @@ final class LocalDatabase {
                 filing.companyID.uuidString,
                 filing.accession,
                 filing.form,
+                filing.filer,
                 dayString(filing.filingDate),
                 filing.reportDate.map(dayString),
                 filing.title,
@@ -554,6 +570,7 @@ final class LocalDatabase {
             companyID: companyID,
             accession: row["accession"],
             form: row["form"],
+            filer: row["filer"],
             filingDate: dayDate(row["filing_date"]) ?? Date(),
             reportDate: dayDate(row["report_date"]),
             title: row["title"] ?? row["form"],

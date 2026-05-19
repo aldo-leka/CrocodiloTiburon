@@ -20,10 +20,10 @@ enum SampleData {
 
     static var filings: [Filing] {
         [
-            Filing(id: apple10KID, companyID: appleID, accession: "0000320193-25-000079", form: "10-K", filingDate: date("2025-10-31"), reportDate: date("2025-09-27"), title: "Annual report", summary: "Main 10-K plus exhibits, XBRL taxonomy, report files, and graphics. Live datamule test found 90 document items.", isDownloaded: true, readStatus: .reading, documentCount: 90, noteCount: 4),
-            Filing(id: apple10QID, companyID: appleID, accession: "0000320193-26-000013", form: "10-Q", filingDate: date("2026-05-01"), reportDate: date("2026-03-28"), title: "Quarterly report", summary: "Recent quarterly filing available from EFTS search results.", isDownloaded: false, readStatus: .unread, documentCount: 0, noteCount: 0),
-            Filing(id: apple8KID, companyID: appleID, accession: "0000320193-25-000077", form: "8-K", filingDate: date("2025-09-09"), reportDate: nil, title: "Current report", summary: "Event filing. Good candidate for event-driven notes and catalyst tracking.", isDownloaded: false, readStatus: .opened, documentCount: 0, noteCount: 1),
-            Filing(id: appleProxyID, companyID: appleID, accession: "0001308179-25-000008", form: "DEF 14A", filingDate: date("2025-01-10"), reportDate: nil, title: "Proxy statement", summary: "Governance, compensation, board, and shareholder proposal data.", isDownloaded: false, readStatus: .unread, documentCount: 0, noteCount: 0)
+            Filing(id: apple10KID, companyID: appleID, accession: "0000320193-25-000079", form: "10-K", filer: "Apple Inc.", filingDate: date("2025-10-31"), reportDate: date("2025-09-27"), title: "Annual report", summary: "Main 10-K plus exhibits, XBRL taxonomy, report files, and graphics. Live datamule test found 90 document items.", isDownloaded: true, readStatus: .reading, documentCount: 90, noteCount: 4),
+            Filing(id: apple10QID, companyID: appleID, accession: "0000320193-26-000013", form: "10-Q", filer: "Apple Inc.", filingDate: date("2026-05-01"), reportDate: date("2026-03-28"), title: "Quarterly report", summary: "Recent quarterly filing available from EFTS search results.", isDownloaded: false, readStatus: .unread, documentCount: 0, noteCount: 0),
+            Filing(id: apple8KID, companyID: appleID, accession: "0000320193-25-000077", form: "8-K", filer: "Apple Inc.", filingDate: date("2025-09-09"), reportDate: nil, title: "Current report", summary: "Event filing. Good candidate for event-driven notes and catalyst tracking.", isDownloaded: false, readStatus: .opened, documentCount: 0, noteCount: 1),
+            Filing(id: appleProxyID, companyID: appleID, accession: "0001308179-25-000008", form: "DEF 14A", filer: "Apple Inc.", filingDate: date("2025-01-10"), reportDate: nil, title: "Proxy statement", summary: "Governance, compensation, board, and shareholder proposal data.", isDownloaded: false, readStatus: .unread, documentCount: 0, noteCount: 0)
         ]
     }
 
@@ -40,12 +40,12 @@ enum SampleData {
 
     static var sections: [ReaderSection] {
         [
-            ReaderSection(key: "business", title: "Business overview", estimatedWordCount: 2600, riskLevel: .useful),
-            ReaderSection(key: "item1a", title: "Item 1A. Risk Factors", estimatedWordCount: 9800, riskLevel: .important),
-            ReaderSection(key: "item1b", title: "Item 1B. Unresolved Staff Comments", estimatedWordCount: 120, riskLevel: .neutral),
-            ReaderSection(key: "item7", title: "Item 7. MD&A", estimatedWordCount: 3600, riskLevel: .important),
-            ReaderSection(key: "item8", title: "Item 8. Financial Statements", estimatedWordCount: 14800, riskLevel: .useful),
-            ReaderSection(key: "signatures", title: "Signatures", estimatedWordCount: 420, riskLevel: .neutral)
+            ReaderSection(key: "business", lookupKey: "business", title: "Business overview", estimatedWordCount: 2600, riskLevel: .useful),
+            ReaderSection(key: "item1a", lookupKey: "item1a", title: "Item 1A. Risk Factors", estimatedWordCount: 9800, riskLevel: .important),
+            ReaderSection(key: "item1b", lookupKey: "item1b", title: "Item 1B. Unresolved Staff Comments", estimatedWordCount: 120, riskLevel: .neutral),
+            ReaderSection(key: "item7", lookupKey: "item7", title: "Item 7. MD&A", estimatedWordCount: 3600, riskLevel: .important),
+            ReaderSection(key: "item8", lookupKey: "item8", title: "Item 8. Financial Statements", estimatedWordCount: 14800, riskLevel: .useful),
+            ReaderSection(key: "signatures", lookupKey: "signatures", title: "Signatures", estimatedWordCount: 420, riskLevel: .neutral)
         ]
     }
 

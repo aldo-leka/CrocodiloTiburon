@@ -1,15 +1,32 @@
 import SwiftUI
 
 struct AppShellView: View {
+    @EnvironmentObject private var workspace: WorkspaceStore
+
     var body: some View {
-        HSplitView {
-            SidebarView()
-                .frame(minWidth: 220, idealWidth: 286, maxWidth: 420)
-            CompanyWorkspaceView()
-                .frame(minWidth: 360, idealWidth: 430, maxWidth: .infinity)
-            ReaderWorkspaceView()
-                .frame(minWidth: 420, idealWidth: 520, maxWidth: .infinity)
-        }
+        PersistedHSplitView(
+            storageKey: "main",
+            panes: [
+                PersistedSplitPane(
+                    minWidth: 220,
+                    defaultWidth: 220,
+                    maxWidth: 420,
+                    view: AnyView(SidebarView().environmentObject(workspace))
+                ),
+                PersistedSplitPane(
+                    minWidth: 360,
+                    defaultWidth: 360,
+                    maxWidth: nil,
+                    view: AnyView(CompanyWorkspaceView().environmentObject(workspace))
+                ),
+                PersistedSplitPane(
+                    minWidth: 420,
+                    defaultWidth: 420,
+                    maxWidth: nil,
+                    view: AnyView(ReaderWorkspaceView().environmentObject(workspace))
+                )
+            ]
+        )
         .background(CTTheme.canvas)
     }
 }

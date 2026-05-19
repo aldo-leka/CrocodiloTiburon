@@ -53,8 +53,9 @@ struct CompanyWorkspaceView: View {
 private struct FilingsHeader: View {
     var body: some View {
         HStack {
-            Text("Form").frame(width: 82, alignment: .leading)
-            Text("Filing").frame(maxWidth: .infinity, alignment: .trailing)
+            Text("Form").frame(width: 74, alignment: .leading)
+            Text("Filer").frame(maxWidth: .infinity, alignment: .leading)
+            Text("Filed").frame(width: 96, alignment: .trailing)
         }
         .font(CTTheme.Typography.caption)
         .foregroundStyle(CTTheme.muted)
@@ -71,11 +72,16 @@ private struct FilingRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: CTTheme.Spacing.md) {
-                PillTag(text: filing.form, color: formColor.opacity(0.16), textColor: formColor)
-                    .frame(width: 82, alignment: .leading)
+                Text(filing.form)
+                    .lineLimit(1)
+                    .frame(width: 74, alignment: .leading)
+                Text(filing.filer ?? "")
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Text(filing.filingDate.formatted(date: .abbreviated, time: .omitted))
                     .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .frame(width: 96, alignment: .trailing)
             }
             .font(CTTheme.Typography.body)
             .foregroundStyle(CTTheme.body)
@@ -86,17 +92,5 @@ private struct FilingRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-
-    private var formColor: Color {
-        switch filing.form {
-        case "10-K": CTTheme.coral
-        case "10-Q": CTTheme.link
-        case "8-K": CTTheme.warning
-        case "20-F": CTTheme.forest
-        case "6-K": CTTheme.link
-        case "40-F": CTTheme.coral
-        default: CTTheme.forest
-        }
     }
 }

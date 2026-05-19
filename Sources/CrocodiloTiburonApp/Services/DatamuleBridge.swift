@@ -215,6 +215,15 @@ struct DatamuleFilingHit: Decodable {
     let description: String?
     let filename: String?
     let ciks: [String]?
+    let items: [String]?
+    let fileNumber: [String]?
+    let filmNumber: [String]?
+    let businessLocations: [String]?
+    let businessStates: [String]?
+    let incorporationStates: [String]?
+    let sics: [String]?
+    let sequence: Int?
+    let xsl: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -227,6 +236,15 @@ struct DatamuleFilingHit: Decodable {
         case description
         case filename
         case ciks
+        case items
+        case fileNumber = "file_number"
+        case filmNumber = "film_number"
+        case businessLocations = "business_locations"
+        case businessStates = "business_states"
+        case incorporationStates = "incorporation_states"
+        case sics
+        case sequence
+        case xsl
     }
 }
 
@@ -306,13 +324,17 @@ struct DatamuleSectionsResponse: Decodable, DatamuleBridgeResponse {
 
 struct DatamuleSectionSummary: Decodable {
     let key: String?
+    let lookupKey: String?
     let title: String?
     let sectionClass: String?
+    let wordCount: Int?
 
     enum CodingKeys: String, CodingKey {
         case key
+        case lookupKey = "lookup_key"
         case title
         case sectionClass = "class"
+        case wordCount = "word_count"
     }
 }
 

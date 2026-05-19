@@ -6,12 +6,12 @@ final class WorkspaceStore: ObservableObject {
     @Published var companies: [Company] = []
     @Published var filings: [Filing] = []
     @Published var documents: [FilingDocument] = []
-    @Published var sections: [ReaderSection] = SampleData.sections
+    @Published var sections: [ReaderSection] = []
     @Published var notes: [ResearchNote] = []
     @Published var selectedCompanyID: Company.ID?
     @Published var selectedFilingID: Filing.ID?
     @Published var selectedDocumentID: FilingDocument.ID?
-    @Published var selectedSectionKey: String = "item1a"
+    @Published var selectedSectionKey: String = ""
     @Published var query: String = ""
     @Published var readerMode: ReaderMode = .cleanText
     @Published var shouldFocusSearch: Bool = false
@@ -19,7 +19,7 @@ final class WorkspaceStore: ObservableObject {
     @Published var isLoadingReader: Bool = false
     @Published var statusMessage: String = ""
     @Published var errorMessage: String?
-    @Published var readerText: String = SampleData.readerText
+    @Published var readerText: String = ""
     @Published var readerHTML: String = ""
     @Published var readerBaseURL: URL?
     @Published var isEditingNote: Bool = false
@@ -33,6 +33,7 @@ final class WorkspaceStore: ObservableObject {
     private let database: LocalDatabase?
     private var datamuleBridge = DatamuleBridge()
     private var companySelectionVersion = 0
+    private var readerLoadVersion = 0
     private var companyRefreshTask: Task<Void, Never>?
     private var companyProfileTask: Task<Void, Never>?
 
@@ -99,7 +100,7 @@ final class WorkspaceStore: ObservableObject {
     }
 
     var readerDisplayText: String {
-        readerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? SampleData.readerText : readerText
+        readerText.trimmingCharacters(in: .whitespacesAndNewlines) == "None" ? "" : readerText
     }
 
     var filteredCompanies: [Company] {
@@ -200,7 +201,7 @@ final class WorkspaceStore: ObservableObject {
 
         isLoadingSEC = true
         errorMessage = nil
-        statusMessage = "Loading datamule ticker universe..."
+        statusMessage = ""
         defer { isLoadingSEC = false }
 
         do {
@@ -208,7 +209,7 @@ final class WorkspaceStore: ObservableObject {
             let universe = companies(from: response.companies)
             try database.upsertCompanies(universe)
             try reloadFromDatabase(preferredCompanyID: selectedCompanyID)
-            statusMessage = "Loaded \(universe.count) datamule-listed filers."
+            statusMessage = ""
         } catch {
             errorMessage = error.localizedDescription
             statusMessage = "Could not load datamule ticker universe."
@@ -224,7 +225,7 @@ final class WorkspaceStore: ObservableObject {
 
         isLoadingSEC = true
         errorMessage = nil
-        statusMessage = "Searching datamule filings for \(company.ticker)..."
+        statusMessage = ""
         defer { isLoadingSEC = false }
 
         do {
@@ -242,7 +243,7 @@ final class WorkspaceStore: ObservableObject {
             }
 
             try reloadFromDatabase(preferredCompanyID: company.id, preferredFilingID: preferredFilingID)
-            statusMessage = "Datamule found \(fetchedFilings.count) filings for \(company.ticker)."
+            statusMessage = ""
             await refreshSelectedFilingDocuments(
                 expectedCompanyID: company.id,
                 expectedFilingID: preferredFilingID,
@@ -269,7 +270,7 @@ final class WorkspaceStore: ObservableObject {
 
         isLoadingSEC = true
         errorMessage = nil
-        statusMessage = "Downloading/caching \(filing.form) with datamule..."
+        statusMessage = ""
         defer { isLoadingSEC = false }
 
         do {
@@ -325,14 +326,15 @@ final class WorkspaceStore: ObservableObject {
             resetReaderPrompt()
             return
         }
+        readerLoadVersion += 1
+        let expectedReaderLoadVersion = readerLoadVersion
         let expectedFilingID = filing.id
         let expectedDocumentID = document.id
-        let expectedSectionKey = selectedSectionKey
         let expectedReaderMode = readerMode
 
         isLoadingReader = true
         errorMessage = nil
-        statusMessage = "Loading clean datamule text for \(document.filename)..."
+        statusMessage = ""
         defer { isLoadingReader = false }
 
         do {
@@ -346,14 +348,14 @@ final class WorkspaceStore: ObservableObject {
             guard shouldApplyReaderResult(
                 filingID: expectedFilingID,
                 documentID: expectedDocumentID,
-                sectionKey: expectedSectionKey
+                requestVersion: expectedReaderLoadVersion
             ) else {
                 return
             }
 
-            readerHTML = loaded.html ?? ""
+            readerHTML = cleanReaderText(loaded.html)
             readerBaseURL = nil
-            readerText = loaded.text ?? loaded.markdown ?? ""
+            readerText = cleanReaderText(loaded.text ?? loaded.markdown)
 
             if let parsedSections = try? await datamuleBridge.sections(
                 accession: filing.accession,
@@ -363,37 +365,46 @@ final class WorkspaceStore: ObservableObject {
                 guard shouldApplyReaderResult(
                     filingID: expectedFilingID,
                     documentID: expectedDocumentID,
-                    sectionKey: expectedSectionKey
+                    requestVersion: expectedReaderLoadVersion
                 ) else {
                     return
                 }
                 sections = readerSections(from: parsedSections.sections)
+                if let currentSection = sections.first(where: { $0.key == selectedSectionKey }) {
+                    selectedSectionKey = currentSection.key
+                } else {
+                    selectedSectionKey = sections.first?.key ?? ""
+                }
+            } else {
+                sections = []
+                selectedSectionKey = ""
             }
 
-            if let sectionText = try? await datamuleBridge.section(
-                accession: filing.accession,
-                documentType: document.type,
-                filename: document.filename,
-                section: expectedSectionKey,
-                format: expectedReaderMode == .markdown ? "markdown" : "text"
-            ),
+            if let section = selectedSection,
+               let sectionText = try? await datamuleBridge.section(
+                   accession: filing.accession,
+                   documentType: document.type,
+                   filename: document.filename,
+                   section: section.lookupKey,
+                   format: expectedReaderMode == .markdown ? "markdown" : "text"
+               ),
                !sectionText.sections.isEmpty {
                 guard shouldApplyReaderResult(
                     filingID: expectedFilingID,
                     documentID: expectedDocumentID,
-                    sectionKey: expectedSectionKey
+                    requestVersion: expectedReaderLoadVersion
                 ) else {
                     return
                 }
-                readerText = sectionText.sections.joined(separator: "\n\n")
+                readerText = cleanReaderText(sectionText.sections.joined(separator: "\n\n"))
             }
 
-            statusMessage = "Loaded \(document.filename) through datamule."
+            statusMessage = ""
         } catch {
             guard shouldApplyReaderResult(
                 filingID: expectedFilingID,
                 documentID: expectedDocumentID,
-                sectionKey: expectedSectionKey
+                requestVersion: expectedReaderLoadVersion
             ) else {
                 return
             }
@@ -522,7 +533,7 @@ final class WorkspaceStore: ObservableObject {
             documents.contains(where: { $0.id == id }) ? id : nil
         } ?? documents.first?.id
 
-        sections = SampleData.sections
+        sections = []
     }
 
     private func mostRecentlyOpenedCompanyID() -> Company.ID? {
@@ -554,11 +565,11 @@ final class WorkspaceStore: ObservableObject {
     private func shouldApplyReaderResult(
         filingID: Filing.ID,
         documentID: FilingDocument.ID,
-        sectionKey: String
+        requestVersion: Int
     ) -> Bool {
         selectedFilingID == filingID
             && selectedDocumentID == documentID
-            && selectedSectionKey == sectionKey
+            && readerLoadVersion == requestVersion
     }
 
     private func prepareSelectedCompanyProfileLoad(selectionVersion: Int) {
@@ -648,13 +659,12 @@ final class WorkspaceStore: ObservableObject {
     }
 
     private func resetReaderPrompt() {
+        readerLoadVersion += 1
         readerHTML = ""
         readerBaseURL = nil
-        if let document = selectedDocument {
-            readerText = "Select \(document.filename) in the document list to load datamule content."
-        } else {
-            readerText = "Select a filing to load its primary document here."
-        }
+        readerText = ""
+        sections = []
+        selectedSectionKey = ""
     }
 
     private func filings(from hits: [DatamuleFilingHit], company: Company) -> [Filing] {
@@ -676,10 +686,11 @@ final class WorkspaceStore: ObservableObject {
                     companyID: company.id,
                     accession: accession,
                     form: form,
+                    filer: filerName(from: hit, company: company),
                     filingDate: filingDate,
                     reportDate: dayDate(hit.periodEnding),
                     title: hit.description?.isEmpty == false ? hit.description! : title(for: form),
-                    summary: "Datamule filing hit. Primary document: \(hit.filename ?? "unknown").",
+                    summary: hit.items?.isEmpty == false ? "Items: \(hit.items!.joined(separator: ", "))" : "",
                     primaryDocument: hit.filename,
                     isDownloaded: false,
                     readStatus: .unread,
@@ -771,6 +782,7 @@ final class WorkspaceStore: ObservableObject {
         let sections = datamuleSections.compactMap { summary -> ReaderSection? in
             guard let rawKey = summary.key, let title = summary.title else { return nil }
             let key = rawKey.lowercased()
+            let lookupKey = (summary.lookupKey ?? summary.key ?? rawKey).lowercased()
             let sectionClass = summary.sectionClass?.lowercased()
             let keep = key.hasPrefix("item")
                 || key.hasPrefix("part")
@@ -782,13 +794,57 @@ final class WorkspaceStore: ObservableObject {
 
             return ReaderSection(
                 key: key,
+                lookupKey: lookupKey,
                 title: title,
-                estimatedWordCount: 0,
+                estimatedWordCount: summary.wordCount ?? 0,
                 riskLevel: riskLevel(for: key)
             )
         }
 
-        return sections.isEmpty ? SampleData.sections : Array(sections.prefix(48))
+        return Array(sections.prefix(64))
+    }
+
+    private func cleanReaderText(_ text: String?) -> String {
+        let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed == "None" ? "" : (text ?? "")
+    }
+
+    private func filerName(from hit: DatamuleFilingHit, company: Company) -> String? {
+        guard let displayNames = hit.displayNames, !displayNames.isEmpty else {
+            return company.name
+        }
+
+        let companyCIK = normalizedCIK(company.cik)
+        let nonCompanyNames = displayNames.filter { displayName in
+            guard let cik = cik(fromDisplayName: displayName) else {
+                return !cleanDisplayName(displayName).localizedCaseInsensitiveContains(company.name)
+            }
+            return normalizedCIK(cik) != companyCIK
+        }
+        let chosenNames = nonCompanyNames.isEmpty ? displayNames : nonCompanyNames
+        let cleaned = chosenNames
+            .map(cleanDisplayName)
+            .filter { !$0.isEmpty }
+        return cleaned.isEmpty ? nil : cleaned.joined(separator: ", ")
+    }
+
+    private func cleanDisplayName(_ displayName: String) -> String {
+        if let range = displayName.range(of: "  (") ?? displayName.range(of: " (CIK") {
+            return displayName[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func cik(fromDisplayName displayName: String) -> String? {
+        guard let range = displayName.range(of: "CIK ") else { return nil }
+        let suffix = displayName[range.upperBound...]
+        let digits = suffix.prefix { $0.isNumber }
+        return digits.isEmpty ? nil : String(digits)
+    }
+
+    private func normalizedCIK(_ cik: String) -> String {
+        let digits = cik.filter(\.isNumber)
+        return digits.trimmingCharacters(in: CharacterSet(charactersIn: "0"))
     }
 
     private func companyName(from hits: [DatamuleFilingHit]?, fallback: String) -> String {

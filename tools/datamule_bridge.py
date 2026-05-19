@@ -13,6 +13,7 @@ import ast
 import io
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -54,10 +55,45 @@ def import_datamule():
         )
 
 
+def search_datamule_submissions(args: argparse.Namespace) -> list[dict[str, Any]]:
+    Index, _, get_ciks_from_tickers = import_datamule()
+    filing_date = (args.start, args.end) if args.start and args.end else None
+    submission_type = args.forms if args.forms else None
+
+    if args.text:
+        index = Index()
+        return capture_datamule(
+            lambda: index.search_submissions(
+                ticker=args.ticker.upper(),
+                submission_type=submission_type,
+                filing_date=filing_date,
+                text_query=args.text,
+                quiet=not args.verbose,
+                requests_per_second=args.requests_per_second,
+            )
+        )
+
+    from datamule.sec.submissions.eftsquery import query_efts
+
+    ciks = capture_datamule(lambda: get_ciks_from_tickers(args.ticker.upper()))
+    if not ciks:
+        fail(f"No CIKs found for ticker: {args.ticker.upper()}", code=2)
+
+    return capture_datamule(
+        lambda: query_efts(
+            cik=ciks,
+            submission_type=submission_type,
+            filing_date=filing_date,
+            requests_per_second=args.requests_per_second,
+            quiet=not args.verbose,
+        )
+    )
+
+
 def normalize_hit(hit: dict[str, Any]) -> dict[str, Any]:
     source = hit.get("_source", {})
     root_forms = source.get("root_forms")
-    form = (root_forms[0] if isinstance(root_forms, list) and root_forms else None) or source.get("form") or source.get("file_type")
+    form = source.get("file_type") or source.get("form") or (root_forms[0] if isinstance(root_forms, list) and root_forms else None)
     return {
         "id": hit.get("_id"),
         "score": hit.get("_score"),
@@ -70,6 +106,15 @@ def normalize_hit(hit: dict[str, Any]) -> dict[str, Any]:
         "description": source.get("file_description"),
         "filename": (hit.get("_id", "").split(":", 1)[1] if ":" in hit.get("_id", "") else None),
         "ciks": source.get("ciks"),
+        "items": source.get("items"),
+        "file_number": source.get("file_num"),
+        "film_number": source.get("film_num"),
+        "business_locations": source.get("biz_locations"),
+        "business_states": source.get("biz_states"),
+        "incorporation_states": source.get("inc_states"),
+        "sics": source.get("sics"),
+        "sequence": source.get("sequence"),
+        "xsl": source.get("xsl"),
     }
 
 
@@ -145,18 +190,7 @@ def cmd_profile(args: argparse.Namespace) -> None:
 
 
 def cmd_search(args: argparse.Namespace) -> None:
-    Index, _, _ = import_datamule()
-    index = Index()
-    results = capture_datamule(
-        lambda: index.search_submissions(
-            ticker=args.ticker.upper(),
-            submission_type=args.forms if args.forms else None,
-            filing_date=(args.start, args.end) if args.start and args.end else None,
-            text_query=args.text,
-            quiet=not args.verbose,
-            requests_per_second=args.requests_per_second,
-        )
-    )
+    results = search_datamule_submissions(args)
     emit({
         "ok": True,
         "ticker": args.ticker.upper(),
@@ -232,9 +266,12 @@ def find_document(submission: Any, document_type: str | None, filename: str | No
 
 
 def normalize_text(value: Any) -> str:
+    if value is None:
+        return ""
     if isinstance(value, list):
-        return "\n\n".join(str(item) for item in value)
-    return str(value)
+        return "\n\n".join(normalize_text(item) for item in value if item is not None)
+    text = str(value)
+    return "" if text.strip() == "None" else text
 
 
 def cmd_document(args: argparse.Namespace) -> None:
@@ -252,6 +289,8 @@ def cmd_document(args: argparse.Namespace) -> None:
             content = getattr(document, "content", b"")
             if isinstance(content, bytes):
                 html = content.decode("utf-8", errors="replace")
+            elif content is None:
+                html = ""
             else:
                 html = str(content)
 
@@ -274,21 +313,52 @@ def cmd_document(args: argparse.Namespace) -> None:
     fail("No matching cached submission found", code=2)
 
 
+def slug(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+    return text or "section"
+
+
+def text_from_node(node: Any) -> str:
+    if isinstance(node, dict):
+        parts = []
+        title = node.get("title")
+        if title:
+            parts.append(str(title))
+        if "contents" in node:
+            contents = node.get("contents")
+            parts.append(text_from_node(contents))
+        else:
+            parts.extend(text_from_node(value) for value in node.values())
+        return " ".join(part for part in parts if part)
+    if isinstance(node, list):
+        return " ".join(text_from_node(item) for item in node)
+    if node is None:
+        return ""
+    return str(node)
+
+
 def collect_sections_from_node(node: Any, output: list[dict[str, Any]]) -> None:
     if not isinstance(node, dict):
         return
     key = node.get("standardized_title")
     title = node.get("title")
     node_class = node.get("class")
-    if key or title:
+    if key or node_class in {"item", "part", "signatures"}:
+        lookup_key = key or title
         output.append({
-            "key": key or str(title).lower().replace(" ", ""),
+            "lookup_key": lookup_key,
+            "key": key or slug(title),
             "title": title or key,
             "class": node_class,
+            "word_count": len(text_from_node(node).split()),
         })
     contents = node.get("contents")
     if isinstance(contents, dict):
         for child in contents.values():
+            collect_sections_from_node(child, output)
+    elif isinstance(contents, list):
+        for child in contents:
             collect_sections_from_node(child, output)
 
 
@@ -311,13 +381,15 @@ def cmd_sections(args: argparse.Namespace) -> None:
                 for node in document_tree.values():
                     collect_sections_from_node(node, raw_sections)
 
-            seen = set()
+            seen: dict[str, int] = {}
             sections = []
             for section in raw_sections:
-                key = section.get("key")
-                if not key or key in seen:
+                base_key = section.get("key")
+                if not base_key:
                     continue
-                seen.add(key)
+                seen[base_key] = seen.get(base_key, 0) + 1
+                if seen[base_key] > 1:
+                    section["key"] = f"{base_key}-{seen[base_key]}"
                 sections.append(section)
             return sections
 
@@ -337,14 +409,18 @@ def cmd_section(args: argparse.Namespace) -> None:
         document = find_document(submission, args.document_type, args.filename)
         if document is not None:
             sections = capture_datamule(lambda: document.get_section(title=args.section, format=args.format))
+            normalized_sections = [
+                text for text in (normalize_text(section) for section in sections)
+                if text.strip()
+            ]
             emit({
                 "ok": True,
                 "accession": accession,
                 "document_type": getattr(document, "type", args.document_type),
                 "filename": getattr(document, "filename", args.filename),
                 "section": args.section,
-                "count": len(sections),
-                "sections": sections,
+                "count": len(normalized_sections),
+                "sections": normalized_sections,
             })
             return
     fail("No matching cached submission/document found", code=2)
