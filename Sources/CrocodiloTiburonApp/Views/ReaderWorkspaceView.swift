@@ -7,16 +7,15 @@ struct ReaderWorkspaceView: View {
         VStack(spacing: 0) {
             readerToolbar
             Divider()
-            HStack(spacing: 0) {
+            HSplitView {
                 SectionRailView()
-                    .frame(width: 210)
-                Divider()
+                    .frame(minWidth: 160, idealWidth: 210, maxWidth: 320)
                 FilingReaderView()
-                    .frame(minWidth: 420)
-                Divider()
+                    .frame(minWidth: 360, idealWidth: 520, maxWidth: .infinity)
                 NotesPanelView()
-                    .frame(width: 300)
+                    .frame(minWidth: 240, idealWidth: 300, maxWidth: 460)
             }
+            .frame(maxHeight: .infinity)
         }
         .background(CTTheme.canvas)
     }
@@ -39,8 +38,11 @@ struct ReaderWorkspaceView: View {
             }
             .pickerStyle(.segmented)
             .frame(width: 248)
-            Button("Compare years") {}
+            Button("Reload doc") {
+                Task { await workspace.loadSelectedDocumentContent() }
+            }
                 .buttonStyle(CTSecondaryButtonStyle())
+                .disabled(workspace.isLoadingReader || workspace.selectedDocument == nil)
         }
         .padding(.horizontal, CTTheme.Spacing.lg)
         .frame(height: 72)
@@ -95,36 +97,41 @@ struct FilingReaderView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: CTTheme.Spacing.xl) {
-                CTCard(background: CTTheme.surfaceDark) {
-                    VStack(alignment: .leading, spacing: CTTheme.Spacing.md) {
-                        Text("Item 1A. Risk Factors")
-                            .font(CTTheme.Typography.displayMedium)
-                            .foregroundStyle(.white)
-                        Text("Parsed text placeholder. The live bridge will replace this with Document.get_section(title='item1a', format='text').")
-                            .font(CTTheme.Typography.body)
-                            .foregroundStyle(.white.opacity(0.75))
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        Group {
+            if workspace.isLoadingReader {
+                VStack(spacing: CTTheme.Spacing.md) {
+                    ProgressView()
+                    Text("Loading SEC document...")
+                        .font(CTTheme.Typography.body)
+                        .foregroundStyle(CTTheme.muted)
                 }
-                Text(SampleData.readerText)
-                    .font(.system(size: 15, weight: .regular, design: .serif))
-                    .foregroundStyle(CTTheme.body)
-                    .lineSpacing(6)
-                    .textSelection(.enabled)
-                CTCard(background: CTTheme.cream) {
-                    VStack(alignment: .leading, spacing: CTTheme.Spacing.sm) {
-                        Text("Next product move")
-                            .font(CTTheme.Typography.titleSmall)
-                        Text("Wire this reader to the Python datamule bridge, then cache section text in SQLite. Keep the original filing available in a WKWebView toggle.")
-                            .font(CTTheme.Typography.body)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if workspace.readerMode == .original, !workspace.readerHTML.isEmpty {
+                FilingWebView(html: workspace.readerHTML, baseURL: workspace.readerBaseURL)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: CTTheme.Spacing.xl) {
+                        CTCard(background: CTTheme.surfaceDark) {
+                            VStack(alignment: .leading, spacing: CTTheme.Spacing.md) {
+                                Text(workspace.selectedSection?.title ?? workspace.selectedDocument?.description ?? "Reader")
+                                    .font(CTTheme.Typography.displayMedium)
+                                    .foregroundStyle(.white)
+                                Text(workspace.selectedDocument?.filename ?? "Select a filing document")
+                                    .font(CTTheme.Typography.body)
+                                    .foregroundStyle(.white.opacity(0.75))
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        Text(workspace.readerMode == .markdown ? "```text\n\(workspace.readerDisplayText)\n```" : workspace.readerDisplayText)
+                            .font(.system(size: 15, weight: .regular, design: workspace.readerMode == .markdown ? .monospaced : .serif))
                             .foregroundStyle(CTTheme.body)
+                            .lineSpacing(6)
+                            .textSelection(.enabled)
                     }
+                    .padding(CTTheme.Spacing.xl)
+                    .frame(maxWidth: 760, alignment: .leading)
                 }
             }
-            .padding(CTTheme.Spacing.xl)
-            .frame(maxWidth: 760, alignment: .leading)
         }
     }
 }
@@ -139,29 +146,79 @@ struct NotesPanelView: View {
                     .font(CTTheme.Typography.label)
                     .foregroundStyle(CTTheme.ink)
                 Spacer()
-                Button(action: {}) {
+                Button(action: workspace.beginNewNote) {
                     Image(systemName: "plus")
                 }
                 .buttonStyle(.plain)
             }
-            CTCard(background: CTTheme.peach) {
-                VStack(alignment: .leading, spacing: CTTheme.Spacing.sm) {
-                    Text("Quick note")
-                        .font(CTTheme.Typography.titleSmall)
-                    Text("Selection-based notes should land here without breaking reading flow.")
-                        .font(CTTheme.Typography.body)
+            if workspace.isEditingNote {
+                NoteEditorView()
+            } else {
+                Button(action: workspace.beginNewNote) {
+                    CTCard(background: CTTheme.peach) {
+                        VStack(alignment: .leading, spacing: CTTheme.Spacing.sm) {
+                            Text("Quick note")
+                                .font(CTTheme.Typography.titleSmall)
+                            Text("Create a note for the selected company, filing, document, and section.")
+                                .font(CTTheme.Typography.body)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
+                .buttonStyle(.plain)
             }
             ScrollView {
                 LazyVStack(spacing: CTTheme.Spacing.md) {
                     ForEach(workspace.selectedNotes) { note in
-                        NoteCard(note: note)
+                        Button {
+                            workspace.editNote(note)
+                        } label: {
+                            NoteCard(note: note)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
         }
         .padding(CTTheme.Spacing.lg)
         .background(CTTheme.canvas)
+    }
+}
+
+private struct NoteEditorView: View {
+    @EnvironmentObject private var workspace: WorkspaceStore
+
+    var body: some View {
+        CTCard(background: CTTheme.surfaceSoft, border: CTTheme.hairline) {
+            VStack(alignment: .leading, spacing: CTTheme.Spacing.sm) {
+                TextField("Title", text: $workspace.draftNoteTitle)
+                    .textFieldStyle(.plain)
+                    .font(CTTheme.Typography.titleSmall)
+                TextEditor(text: $workspace.draftNoteBody)
+                    .font(CTTheme.Typography.body)
+                    .frame(minHeight: 140)
+                    .scrollContentBackground(.hidden)
+                    .background(CTTheme.canvas)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: CTTheme.Radius.sm, style: .continuous)
+                            .stroke(CTTheme.hairline, lineWidth: 1)
+                    )
+                TextField("tags, comma separated", text: $workspace.draftNoteTags)
+                    .textFieldStyle(.roundedBorder)
+                    .font(CTTheme.Typography.body)
+                HStack {
+                    Button("Cancel", action: workspace.cancelNoteEditing)
+                        .buttonStyle(CTSecondaryButtonStyle())
+                    Spacer()
+                    if workspace.editingNoteID != nil {
+                        Button("Delete", action: workspace.deleteEditingNote)
+                            .buttonStyle(CTSecondaryButtonStyle())
+                    }
+                    Button("Save", action: workspace.saveDraftNote)
+                        .buttonStyle(CTPrimaryButtonStyle())
+                }
+            }
+        }
     }
 }
 

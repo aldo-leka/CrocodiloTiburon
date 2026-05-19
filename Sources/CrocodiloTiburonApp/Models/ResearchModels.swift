@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct Company: Identifiable, Codable, Hashable {
@@ -33,6 +34,7 @@ struct Filing: Identifiable, Codable, Hashable {
     var reportDate: Date?
     var title: String
     var summary: String
+    var primaryDocument: String? = nil
     var isDownloaded: Bool
     var readStatus: FilingReadStatus
     var documentCount: Int
@@ -89,4 +91,20 @@ struct ResearchNote: Identifiable, Codable, Hashable {
     var tags: [String]
     var createdAt: Date
     var updatedAt: Date
+}
+
+extension UUID {
+    static func stable(_ seed: String) -> UUID {
+        var bytes = Array(SHA256.hash(data: Data(seed.utf8)).prefix(16))
+        bytes[6] = (bytes[6] & 0x0f) | 0x50
+        bytes[8] = (bytes[8] & 0x3f) | 0x80
+
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5],
+            bytes[6], bytes[7],
+            bytes[8], bytes[9],
+            bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
+    }
 }

@@ -2,15 +2,13 @@ import SwiftUI
 
 struct AppShellView: View {
     var body: some View {
-        HStack(spacing: 0) {
+        HSplitView {
             SidebarView()
-                .frame(width: 286)
-            Divider()
+                .frame(minWidth: 220, idealWidth: 286, maxWidth: 420)
             CompanyWorkspaceView()
-                .frame(minWidth: 430)
-            Divider()
+                .frame(minWidth: 360, idealWidth: 430, maxWidth: .infinity)
             ReaderWorkspaceView()
-                .frame(minWidth: 520)
+                .frame(minWidth: 420, idealWidth: 520, maxWidth: .infinity)
         }
         .background(CTTheme.canvas)
     }

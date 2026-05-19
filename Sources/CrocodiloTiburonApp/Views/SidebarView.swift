@@ -2,23 +2,26 @@ import SwiftUI
 
 struct SidebarView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
+    @State private var searchText = ""
     @FocusState private var searchFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: CTTheme.Spacing.lg) {
+        VStack(alignment: .leading, spacing: CTTheme.Spacing.md) {
             header
             searchField
-            heroCard
-            queueHeader
             companyList
-            Spacer(minLength: CTTheme.Spacing.md)
-            footerActions
         }
         .padding(CTTheme.Spacing.lg)
         .background(CTTheme.surfaceSoft)
+        .onAppear {
+            searchText = workspace.query
+        }
+        .onChange(of: searchText) { _, value in
+            workspace.query = value
+        }
         .onChange(of: workspace.shouldFocusSearch) { _, shouldFocus in
             if shouldFocus {
-                searchFocused = true
+                focusSearchField()
                 workspace.shouldFocusSearch = false
             }
         }
@@ -45,10 +48,11 @@ struct SidebarView: View {
         HStack(spacing: CTTheme.Spacing.sm) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(CTTheme.muted)
-            TextField("Ticker, CIK, or company", text: $workspace.query)
+            TextField("Ticker, CIK, or company", text: $searchText)
                 .textFieldStyle(.plain)
                 .focused($searchFocused)
                 .font(CTTheme.Typography.body)
+                .foregroundStyle(CTTheme.ink)
         }
         .padding(.horizontal, CTTheme.Spacing.md)
         .frame(height: 44)
@@ -58,56 +62,55 @@ struct SidebarView: View {
                 .stroke(searchFocused ? CTTheme.link : CTTheme.hairline, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: CTTheme.Radius.sm, style: .continuous))
-    }
-
-    private var heroCard: some View {
-        CTCard(background: CTTheme.coral) {
-            VStack(alignment: .leading, spacing: CTTheme.Spacing.md) {
-                Text("Read filings like a private investor, not like a browser tab hoarder.")
-                    .font(.system(size: 26, weight: .regular))
-                    .foregroundStyle(.white)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("Ticker → filings → sections → notes.")
-                    .font(CTTheme.Typography.body)
-                    .foregroundStyle(.white.opacity(0.82))
-                Button("Sync SEC") {}
-                    .buttonStyle(CTSecondaryButtonStyle())
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                focusSearchField()
             }
-        }
-    }
-
-    private var queueHeader: some View {
-        HStack {
-            Text("Research queue")
-                .font(CTTheme.Typography.label)
-                .foregroundStyle(CTTheme.ink)
-            Spacer()
-            PillTag(text: "A-Z", color: CTTheme.cream)
-        }
+        )
     }
 
     private var companyList: some View {
-        ScrollView {
-            LazyVStack(spacing: CTTheme.Spacing.xs) {
-                ForEach(workspace.filteredCompanies) { company in
-                    CompanyRow(company: company, isSelected: workspace.selectedCompanyID == company.id) {
-                        workspace.selectCompany(company)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: CTTheme.Spacing.xs) {
+                    ForEach(workspace.filteredCompanies) { company in
+                        CompanyRow(
+                            company: company,
+                            isSelected: workspace.selectedCompanyID == company.id,
+                            isDirty: workspace.companyHasOpenedFiling(company)
+                        ) {
+                            workspace.selectCompany(company)
+                        }
+                        .id(company.id)
                     }
                 }
             }
+            .scrollIndicators(.hidden)
+            .onAppear {
+                scrollToSelected(with: proxy)
+            }
+            .onChange(of: workspace.selectedCompanyID) { _, _ in
+                scrollToSelected(with: proxy)
+            }
+            .onChange(of: workspace.filteredCompanies.count) { _, _ in
+                scrollToSelected(with: proxy)
+            }
         }
-        .scrollIndicators(.hidden)
     }
 
-    private var footerActions: some View {
-        VStack(spacing: CTTheme.Spacing.sm) {
-            Button("Add company") {}
-                .buttonStyle(CTPrimaryButtonStyle())
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Text("Backend bridge: datamule-python via tools/datamule_bridge.py")
-                .font(CTTheme.Typography.body)
-                .foregroundStyle(CTTheme.muted)
-                .fixedSize(horizontal: false, vertical: true)
+    private func scrollToSelected(with proxy: ScrollViewProxy) {
+        guard let selectedCompanyID = workspace.selectedCompanyID else { return }
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                proxy.scrollTo(selectedCompanyID, anchor: .center)
+            }
+        }
+    }
+
+    private func focusSearchField() {
+        activateAppWindow()
+        DispatchQueue.main.async {
+            searchFocused = true
         }
     }
 }
@@ -115,47 +118,45 @@ struct SidebarView: View {
 private struct CompanyRow: View {
     let company: Company
     let isSelected: Bool
+    let isDirty: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(alignment: .top, spacing: CTTheme.Spacing.sm) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(company.ticker)
-                            .font(CTTheme.Typography.label)
-                            .foregroundStyle(CTTheme.ink)
-                        PillTag(text: company.status.shortLabel, color: statusColor.opacity(0.18), textColor: statusColor)
-                    }
+            HStack(alignment: .center, spacing: CTTheme.Spacing.sm) {
+                Circle()
+                    .fill(isDirty ? CTTheme.coral : CTTheme.surfaceStrong)
+                    .frame(width: 8, height: 8)
+                HStack(spacing: CTTheme.Spacing.xs) {
+                    Text(company.ticker)
+                        .font(CTTheme.Typography.label)
+                        .foregroundStyle(CTTheme.ink)
+                        .lineLimit(1)
                     Text(company.name)
                         .font(CTTheme.Typography.body)
                         .foregroundStyle(CTTheme.body)
                         .lineLimit(1)
-                    Text("CIK \(company.cik) · \(company.industry)")
-                        .font(CTTheme.Typography.caption)
-                        .foregroundStyle(CTTheme.muted)
-                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
                 Spacer()
             }
-            .padding(CTTheme.Spacing.md)
-            .background(isSelected ? CTTheme.canvas : Color.clear)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, CTTheme.Spacing.md)
+            .padding(.vertical, CTTheme.Spacing.sm)
+            .background(rowBackground)
+            .contentShape(RoundedRectangle(cornerRadius: CTTheme.Radius.md, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: CTTheme.Radius.md, style: .continuous)
-                    .stroke(isSelected ? CTTheme.hairline : Color.clear, lineWidth: 1)
+                    .stroke(isSelected ? CTTheme.link : Color.clear, lineWidth: 1.5)
             )
             .clipShape(RoundedRectangle(cornerRadius: CTTheme.Radius.md, style: .continuous))
         }
         .buttonStyle(.plain)
     }
 
-    private var statusColor: Color {
-        switch company.status {
-        case .candidate: CTTheme.coral
-        case .watchlist, .interesting: CTTheme.forest
-        case .pass: CTTheme.muted
-        case .inProgress, .readAnnual: CTTheme.link
-        case .notStarted: CTTheme.muted
-        }
+    private var rowBackground: Color {
+        if isSelected { return CTTheme.canvas }
+        if isDirty { return CTTheme.cream.opacity(0.4) }
+        return Color.clear
     }
 }
