@@ -18,6 +18,7 @@ import re
 import shutil
 import sys
 import tempfile
+import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -214,6 +215,7 @@ def cmd_download(args: argparse.Namespace) -> None:
     _, Portfolio, _ = import_datamule()
     cache_dir = Path(args.cache_dir).expanduser().resolve()
     cache_dir.mkdir(parents=True, exist_ok=True)
+    archive_fallback_count = 0
 
     def download() -> None:
         portfolio = Portfolio(str(cache_dir))
@@ -226,9 +228,31 @@ def cmd_download(args: argparse.Namespace) -> None:
             quiet=not args.verbose,
         )
 
-    capture_datamule(download)
+    try:
+        capture_datamule(download)
+    except Exception as exc:
+        try:
+            archive_fallback_count = len(archive_fallback_downloads(args, cache_dir))
+        except Exception as fallback_exc:
+            fail(
+                "Datamule download failed and SEC archive fallback also failed. "
+                f"Datamule: {type(exc).__name__}: {exc}. "
+                f"Fallback: {type(fallback_exc).__name__}: {fallback_exc}"
+            )
+        if archive_fallback_count == 0:
+            fail(
+                "Datamule download failed and SEC archive fallback found no matching filings. "
+                f"Datamule: {type(exc).__name__}: {exc}"
+            )
+
     downloaded = sorted(str(path) for path in cache_dir.glob("*.tar"))
-    emit({"ok": True, "cache_dir": str(cache_dir), "downloaded_tar_count": len(downloaded), "files": downloaded})
+    emit({
+        "ok": True,
+        "cache_dir": str(cache_dir),
+        "downloaded_tar_count": len(downloaded),
+        "archive_fallback_count": archive_fallback_count,
+        "files": downloaded,
+    })
 
 
 def submission_to_documents(submission: Any) -> list[dict[str, Any]]:
@@ -246,6 +270,104 @@ def submission_to_documents(submission: Any) -> list[dict[str, Any]]:
 
 def compact_accession(accession: str) -> str:
     return accession.replace("-", "")
+
+
+def archive_cik_path(cik: Any) -> str | None:
+    try:
+        return str(int(str(cik).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def accession_archive_url(accession: str, cik: Any | None = None) -> str:
+    if not re.fullmatch(r"\d{10}-\d{2}-\d{6}", accession):
+        raise ValueError(f"Invalid accession number: {accession}")
+    compact = compact_accession(accession)
+    archive_cik = archive_cik_path(cik) or archive_cik_path(accession.split("-", 1)[0])
+    if archive_cik is None:
+        raise ValueError(f"Invalid CIK for accession number: {accession}")
+    return f"https://www.sec.gov/Archives/edgar/data/{archive_cik}/{compact}/{accession}.txt"
+
+
+def archive_cik_candidates(accession: str, ciks: list[Any] | None = None) -> list[str]:
+    candidates: list[str] = []
+    for cik in [*(ciks or []), accession.split("-", 1)[0]]:
+        archive_cik = archive_cik_path(cik)
+        if archive_cik and archive_cik not in candidates:
+            candidates.append(archive_cik)
+    return candidates
+
+
+def download_submission_from_archive(cache_dir: Path, accession: str, ciks: list[Any] | None = None) -> Path:
+    from datamule.sec.submissions.downloader import write_sgml_file_to_tar
+    from datamule.sec.utils import headers
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    compact = compact_accession(accession)
+    output_path = cache_dir / f"{compact}.tar"
+    temporary_path = cache_dir / f".{compact}.tar.tmp"
+    errors = []
+    sgml_content = None
+
+    for cik in archive_cik_candidates(accession, ciks):
+        url = accession_archive_url(accession, cik)
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                status = getattr(response, "status", response.getcode())
+                if status != 200:
+                    errors.append(f"HTTP {status} for {url}")
+                    continue
+                sgml_content = response.read()
+                break
+        except Exception as exc:
+            errors.append(f"{type(exc).__name__}: {exc} for {url}")
+
+    if sgml_content is None:
+        raise ValueError("SEC archive lookup failed. " + " | ".join(errors))
+
+    try:
+        capture_datamule(
+            lambda: write_sgml_file_to_tar(str(temporary_path), bytes_content=sgml_content)
+        )
+        temporary_path.replace(output_path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink(missing_ok=True)
+
+    return output_path
+
+
+def form_matches(hit: dict[str, Any], wanted_forms: list[str] | None) -> bool:
+    wanted = {form.upper() for form in wanted_forms or [] if form}
+    if not wanted:
+        return True
+
+    candidates = {str(hit.get("form") or "").upper()}
+    root_forms = hit.get("root_forms")
+    if isinstance(root_forms, list):
+        candidates.update(str(form).upper() for form in root_forms if form)
+
+    return bool(candidates & wanted)
+
+
+def archive_fallback_downloads(args: argparse.Namespace, cache_dir: Path) -> list[Path]:
+    if not args.start or not args.end or args.start != args.end:
+        return []
+
+    fallback_args = argparse.Namespace(**vars(args))
+    fallback_args.forms = None
+    fallback_args.text = None
+    hits = [normalize_hit(hit) for hit in search_datamule_submissions(fallback_args)]
+    downloaded_paths = []
+
+    for hit in hits:
+        accession = hit.get("accession")
+        if not accession or not form_matches(hit, args.forms):
+            continue
+        downloaded_paths.append(download_submission_from_archive(cache_dir, accession, hit.get("ciks")))
+
+    return downloaded_paths
 
 
 def matching_cached_submissions(cache_dir: Path, accession: str) -> list[Any]:

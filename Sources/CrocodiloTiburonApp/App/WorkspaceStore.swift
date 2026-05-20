@@ -343,9 +343,13 @@ final class WorkspaceStore: ObservableObject {
         guard filing.companyID == company.id else { return }
 
         isLoadingSEC = true
+        isLoadingDocuments = true
         errorMessage = nil
         statusMessage = ""
-        defer { isLoadingSEC = false }
+        defer {
+            isLoadingSEC = false
+            isLoadingDocuments = false
+        }
 
         do {
             let filingDate = dayString(filing.filingDate)
