@@ -82,7 +82,7 @@ extension FilingDocument {
     }
 
     var prefersMarkdownReader: Bool {
-        isXML
+        isTextLike
     }
 
     var isReaderDisplayable: Bool {

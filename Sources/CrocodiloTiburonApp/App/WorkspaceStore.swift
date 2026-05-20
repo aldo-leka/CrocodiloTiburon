@@ -6,6 +6,7 @@ final class WorkspaceStore: ObservableObject {
     private static let excludeOwnershipReportsKey = "filings.excludeOwnershipReports"
     private static let ownershipReportForms: Set<String> = ["3", "3/A", "4", "4/A", "5", "5/A"]
     private static let nonOwnershipSearchForms = ["-0", "-3", "-3/A", "-4", "-4/A", "-5", "-5/A"]
+    private static let maxReaderContentCacheEntries = 24
 
     @Published var companies: [Company] = []
     @Published var filings: [Filing] = []
@@ -41,6 +42,9 @@ final class WorkspaceStore: ObservableObject {
     private var readerLoadVersion = 0
     private var companyRefreshTask: Task<Void, Never>?
     private var companyProfileTask: Task<Void, Never>?
+    private var readerSectionsCache: [ReaderDocumentCacheKey: [ReaderSection]] = [:]
+    private var readerContentCache: [ReaderContentCacheKey: ReaderContentPayload] = [:]
+    private var readerContentCacheOrder: [ReaderContentCacheKey] = []
 
     init() {
         let initialCompanies = SampleData.companies
@@ -416,6 +420,24 @@ final class WorkspaceStore: ObservableObject {
 
         do {
             if document.isPDF {
+                let cacheKey = readerContentCacheKey(filing: filing, document: document, sectionKey: "")
+                if let cachedContent = cachedReaderContent(for: cacheKey) {
+                    guard shouldApplyReaderResult(
+                        filingID: expectedFilingID,
+                        documentID: expectedDocumentID,
+                        requestVersion: expectedReaderLoadVersion
+                    ) else {
+                        return
+                    }
+                    readerPDFData = cachedContent.pdfData
+                    readerText = cachedContent.text
+                    readerMarkdown = cachedContent.markdown
+                    sections = []
+                    selectedSectionKey = ""
+                    statusMessage = ""
+                    return
+                }
+
                 let exported = try await datamuleBridge.exportDocument(
                     accession: filing.accession,
                     documentType: document.type,
@@ -432,44 +454,37 @@ final class WorkspaceStore: ObservableObject {
                     return
                 }
                 let exportedURL = URL(fileURLWithPath: path)
-                readerPDFData = try Data(contentsOf: exportedURL)
+                let pdfData = try Data(contentsOf: exportedURL)
                 try? FileManager.default.removeItem(at: exportedURL)
+                readerPDFData = pdfData
                 readerText = ""
                 readerMarkdown = ""
                 sections = []
                 selectedSectionKey = ""
+                cacheReaderContent(
+                    ReaderContentPayload(pdfData: pdfData, text: "", markdown: ""),
+                    for: cacheKey
+                )
             } else {
                 readerPDFData = nil
 
-                if document.canExtractSections,
-                   let parsedSections = try? await datamuleBridge.sections(
-                    accession: filing.accession,
-                    documentType: document.type,
-                    filename: document.filename
-                ) {
-                    guard shouldApplyReaderResult(
-                        filingID: expectedFilingID,
-                        documentID: expectedDocumentID,
-                        requestVersion: expectedReaderLoadVersion
-                    ) else {
-                        return
-                    }
-                    sections = readerSections(from: parsedSections.sections)
-                    if let currentSection = sections.first(where: { $0.key == selectedSectionKey }) {
-                        selectedSectionKey = currentSection.key
+                if document.canExtractSections {
+                    let documentCacheKey = readerDocumentCacheKey(filing: filing, document: document)
+                    let loadedSections: [ReaderSection]
+                    if let cachedSections = readerSectionsCache[documentCacheKey] {
+                        loadedSections = cachedSections
+                    } else if let parsedSections = try? await datamuleBridge.sections(
+                        accession: filing.accession,
+                        documentType: document.type,
+                        filename: document.filename
+                    ) {
+                        loadedSections = readerSections(from: parsedSections.sections)
+                        readerSectionsCache[documentCacheKey] = loadedSections
                     } else {
-                        selectedSectionKey = sections.first?.key ?? ""
+                        loadedSections = []
                     }
 
-                    if let section = selectedSection,
-                       let sectionText = try? await datamuleBridge.section(
-                           accession: filing.accession,
-                           documentType: document.type,
-                           filename: document.filename,
-                           section: section.lookupKey,
-                           format: "text"
-                       ),
-                       !sectionText.sections.isEmpty {
+                    if !loadedSections.isEmpty {
                         guard shouldApplyReaderResult(
                             filingID: expectedFilingID,
                             documentID: expectedDocumentID,
@@ -477,22 +492,115 @@ final class WorkspaceStore: ObservableObject {
                         ) else {
                             return
                         }
-                        readerText = cleanReaderText(sectionText.sections.joined(separator: "\n\n"))
-                        readerMarkdown = ""
-                        statusMessage = ""
-                        return
+                        sections = loadedSections
+                    } else {
+                        sections = []
+                    }
+
+                    if let currentSection = sections.first(where: { $0.key == selectedSectionKey }) {
+                        selectedSectionKey = currentSection.key
+                    } else {
+                        selectedSectionKey = sections.first?.key ?? ""
+                    }
+
+                    if let section = selectedSection {
+                        let cacheKey = readerContentCacheKey(
+                            filing: filing,
+                            document: document,
+                            sectionKey: section.key
+                        )
+                        if let cachedContent = cachedReaderContent(for: cacheKey) {
+                            guard shouldApplyReaderResult(
+                                filingID: expectedFilingID,
+                                documentID: expectedDocumentID,
+                                requestVersion: expectedReaderLoadVersion
+                            ) else {
+                                return
+                            }
+                            readerText = cachedContent.text
+                            readerMarkdown = cachedContent.markdown
+                            statusMessage = ""
+                            return
+                        }
+
+                        let sectionMarkdown = try? await datamuleBridge.section(
+                            accession: filing.accession,
+                            documentType: document.type,
+                            filename: document.filename,
+                            section: section.lookupKey,
+                            format: "markdown"
+                        )
+                        let markdown = cleanReaderText(sectionMarkdown?.sections.joined(separator: "\n\n"))
+
+                        if !markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            guard shouldApplyReaderResult(
+                                filingID: expectedFilingID,
+                                documentID: expectedDocumentID,
+                                requestVersion: expectedReaderLoadVersion
+                            ) else {
+                                return
+                            }
+                            let payload = ReaderContentPayload(pdfData: nil, text: "", markdown: markdown)
+                            readerText = payload.text
+                            readerMarkdown = payload.markdown
+                            cacheReaderContent(payload, for: cacheKey)
+                            statusMessage = ""
+                            return
+                        }
+
+                        if let sectionText = try? await datamuleBridge.section(
+                            accession: filing.accession,
+                            documentType: document.type,
+                            filename: document.filename,
+                            section: section.lookupKey,
+                            format: "text"
+                        ),
+                           !sectionText.sections.isEmpty {
+                            guard shouldApplyReaderResult(
+                                filingID: expectedFilingID,
+                                documentID: expectedDocumentID,
+                                requestVersion: expectedReaderLoadVersion
+                            ) else {
+                                return
+                            }
+                            let payload = ReaderContentPayload(
+                                pdfData: nil,
+                                text: cleanReaderText(sectionText.sections.joined(separator: "\n\n")),
+                                markdown: ""
+                            )
+                            readerText = payload.text
+                            readerMarkdown = payload.markdown
+                            cacheReaderContent(payload, for: cacheKey)
+                            statusMessage = ""
+                            return
+                        }
                     }
                 } else {
                     sections = []
                     selectedSectionKey = ""
                 }
 
+                let cacheKey = readerContentCacheKey(filing: filing, document: document, sectionKey: "")
+                if let cachedContent = cachedReaderContent(for: cacheKey) {
+                    guard shouldApplyReaderResult(
+                        filingID: expectedFilingID,
+                        documentID: expectedDocumentID,
+                        requestVersion: expectedReaderLoadVersion
+                    ) else {
+                        return
+                    }
+                    readerText = cachedContent.text
+                    readerMarkdown = cachedContent.markdown
+                    statusMessage = ""
+                    return
+                }
+
                 let loaded = try await datamuleBridge.document(
                     accession: filing.accession,
                     documentType: document.type,
                     filename: document.filename,
-                    includeText: !document.prefersMarkdownReader,
-                    includeMarkdown: document.prefersMarkdownReader
+                    includeText: true,
+                    includeMarkdown: true
                 )
 
                 guard shouldApplyReaderResult(
@@ -503,8 +611,14 @@ final class WorkspaceStore: ObservableObject {
                     return
                 }
 
-                readerText = cleanReaderText(loaded.text)
-                readerMarkdown = cleanReaderText(loaded.markdown)
+                let payload = ReaderContentPayload(
+                    pdfData: nil,
+                    text: cleanReaderText(loaded.text),
+                    markdown: cleanReaderText(loaded.markdown)
+                )
+                readerText = payload.text
+                readerMarkdown = payload.markdown
+                cacheReaderContent(payload, for: cacheKey)
             }
 
             statusMessage = ""
@@ -1007,6 +1121,46 @@ final class WorkspaceStore: ObservableObject {
         return trimmed == "None" ? "" : (text ?? "")
     }
 
+    private func readerDocumentCacheKey(filing: Filing, document: FilingDocument) -> ReaderDocumentCacheKey {
+        ReaderDocumentCacheKey(
+            accession: filing.accession,
+            documentType: document.type,
+            filename: document.filename
+        )
+    }
+
+    private func readerContentCacheKey(
+        filing: Filing,
+        document: FilingDocument,
+        sectionKey: String
+    ) -> ReaderContentCacheKey {
+        ReaderContentCacheKey(
+            accession: filing.accession,
+            documentType: document.type,
+            filename: document.filename,
+            sectionKey: sectionKey
+        )
+    }
+
+    private func cachedReaderContent(for key: ReaderContentCacheKey) -> ReaderContentPayload? {
+        guard let payload = readerContentCache[key] else { return nil }
+        readerContentCacheOrder.removeAll { $0 == key }
+        readerContentCacheOrder.append(key)
+        return payload
+    }
+
+    private func cacheReaderContent(_ payload: ReaderContentPayload, for key: ReaderContentCacheKey) {
+        readerContentCache[key] = payload
+        readerContentCacheOrder.removeAll { $0 == key }
+        readerContentCacheOrder.append(key)
+
+        while readerContentCacheOrder.count > Self.maxReaderContentCacheEntries,
+              let evictedKey = readerContentCacheOrder.first {
+            readerContentCacheOrder.removeFirst()
+            readerContentCache[evictedKey] = nil
+        }
+    }
+
     private func filerName(from hit: DatamuleFilingHit, company: Company) -> String? {
         guard let displayNames = hit.displayNames, !displayNames.isEmpty else {
             return company.name
@@ -1110,4 +1264,23 @@ final class WorkspaceStore: ObservableObject {
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.date(from: string)
     }
+}
+
+private struct ReaderDocumentCacheKey: Hashable {
+    var accession: String
+    var documentType: String
+    var filename: String
+}
+
+private struct ReaderContentCacheKey: Hashable {
+    var accession: String
+    var documentType: String
+    var filename: String
+    var sectionKey: String
+}
+
+private struct ReaderContentPayload {
+    var pdfData: Data?
+    var text: String
+    var markdown: String
 }

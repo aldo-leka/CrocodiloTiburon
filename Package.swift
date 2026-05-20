@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "CrocodiloTiburon",
     platforms: [
-        .macOS(.v14)
+        .macOS("15.0")
     ],
     products: [
         .executable(
@@ -14,14 +14,14 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.29.3"),
-        .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.1")
+        .package(url: "https://github.com/gonzalezreal/textual", from: "0.3.1")
     ],
     targets: [
         .executableTarget(
             name: "CrocodiloTiburonApp",
             dependencies: [
                 .product(name: "GRDB", package: "GRDB.swift"),
-                .product(name: "MarkdownUI", package: "swift-markdown-ui")
+                .product(name: "Textual", package: "textual")
             ],
             path: "Sources/CrocodiloTiburonApp",
             resources: [

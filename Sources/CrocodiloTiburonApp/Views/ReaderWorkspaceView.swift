@@ -1,5 +1,5 @@
 import SwiftUI
-import MarkdownUI
+import Textual
 
 struct ReaderWorkspaceView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
@@ -93,7 +93,7 @@ struct FilingReaderView: View {
                 } else if !workspace.readerDisplayContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     ScrollView {
                         VStack(alignment: .leading, spacing: CTTheme.Spacing.xl) {
-                            MarkdownReaderText(
+                            TextualReaderText(
                                 content: workspace.readerDisplayContent,
                                 renderMarkdown: workspace.hasMarkdownReaderContent
                             )
@@ -111,34 +111,39 @@ struct FilingReaderView: View {
     }
 }
 
-private struct MarkdownReaderText: View, Equatable {
+private struct TextualReaderText: View, Equatable {
     let content: String
     let renderMarkdown: Bool
-    @State private var parsedMarkdown: MarkdownContent?
-    @State private var parsedMarkdownSource = ""
+    @State private var chunks: [ReaderContentChunk] = []
+    @State private var chunkSource = ""
 
-    static func == (lhs: MarkdownReaderText, rhs: MarkdownReaderText) -> Bool {
+    static func == (lhs: TextualReaderText, rhs: TextualReaderText) -> Bool {
         lhs.content == rhs.content && lhs.renderMarkdown == rhs.renderMarkdown
     }
 
     var body: some View {
         if renderMarkdown {
             Group {
-                if parsedMarkdownSource == content, let parsedMarkdown {
-                    Markdown(parsedMarkdown)
-                        .markdownTheme(.gitHub)
-                        .textSelection(.enabled)
+                if chunkSource == content, !chunks.isEmpty {
+                    LazyVStack(alignment: .leading, spacing: CTTheme.Spacing.lg) {
+                        ForEach(chunks) { chunk in
+                            StructuredText(markdown: chunk.content)
+                                .textual.structuredTextStyle(.gitHub)
+                                .textual.textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
                 } else {
                     ProgressView()
                         .progressViewStyle(.circular)
                 }
             }
-            .onAppear(perform: parseMarkdownIfNeeded)
+            .onAppear(perform: prepareChunksIfNeeded)
             .onChange(of: content) { _, _ in
-                parseMarkdownIfNeeded()
+                prepareChunksIfNeeded()
             }
             .onChange(of: renderMarkdown) { _, _ in
-                parseMarkdownIfNeeded()
+                prepareChunksIfNeeded()
             }
         } else {
             Text(content)
@@ -149,11 +154,144 @@ private struct MarkdownReaderText: View, Equatable {
         }
     }
 
-    private func parseMarkdownIfNeeded() {
+    private func prepareChunksIfNeeded() {
         guard renderMarkdown else { return }
-        guard parsedMarkdownSource != content || parsedMarkdown == nil else { return }
-        parsedMarkdown = MarkdownContent(content)
-        parsedMarkdownSource = content
+        guard chunkSource != content || chunks.isEmpty else { return }
+        chunks = ReaderMarkdownChunker.chunks(for: content)
+        chunkSource = content
+    }
+}
+
+private struct ReaderContentChunk: Identifiable, Equatable {
+    let id: Int
+    let content: String
+}
+
+private enum ReaderMarkdownChunker {
+    private static let smallDocumentLimit = 36_000
+    private static let preferredChunkLimit = 24_000
+
+    static func chunks(for content: String) -> [ReaderContentChunk] {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        guard trimmed.count > smallDocumentLimit else {
+            return [ReaderContentChunk(id: 0, content: trimmed)]
+        }
+
+        let blocks = markdownBlocks(from: trimmed)
+        var result: [ReaderContentChunk] = []
+        var current = ""
+
+        for block in blocks.flatMap(splitOversizedBlock) {
+            append(block, to: &current, chunks: &result)
+        }
+
+        if !current.isEmpty {
+            result.append(ReaderContentChunk(id: result.count, content: current))
+        }
+
+        return result.isEmpty ? [ReaderContentChunk(id: 0, content: trimmed)] : result
+    }
+
+    private static func append(
+        _ block: String,
+        to current: inout String,
+        chunks: inout [ReaderContentChunk]
+    ) {
+        let separator = current.isEmpty ? "" : "\n\n"
+        let candidateLength = current.count + separator.count + block.count
+        if candidateLength > preferredChunkLimit, !current.isEmpty {
+            chunks.append(ReaderContentChunk(id: chunks.count, content: current))
+            current = block
+        } else {
+            current += separator + block
+        }
+    }
+
+    private static func splitOversizedBlock(_ block: String) -> [String] {
+        guard block.count > preferredChunkLimit else { return [block] }
+
+        let lines = block.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var result: [String] = []
+        var current = ""
+
+        for line in lines {
+            if line.count > preferredChunkLimit {
+                if !current.isEmpty {
+                    result.append(current)
+                    current = ""
+                }
+                result.append(contentsOf: splitOversizedLine(line))
+                continue
+            }
+
+            let separator = current.isEmpty ? "" : "\n"
+            let candidateLength = current.count + separator.count + line.count
+            if candidateLength > preferredChunkLimit, !current.isEmpty {
+                result.append(current)
+                current = line
+            } else {
+                current += separator + line
+            }
+        }
+
+        if !current.isEmpty {
+            result.append(current)
+        }
+
+        return result
+    }
+
+    private static func splitOversizedLine(_ line: String) -> [String] {
+        var result: [String] = []
+        var startIndex = line.startIndex
+
+        while startIndex < line.endIndex {
+            let endIndex = line.index(
+                startIndex,
+                offsetBy: preferredChunkLimit,
+                limitedBy: line.endIndex
+            ) ?? line.endIndex
+            result.append(String(line[startIndex..<endIndex]))
+            startIndex = endIndex
+        }
+
+        return result
+    }
+
+    private static func markdownBlocks(from content: String) -> [String] {
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var blocks: [String] = []
+        var current: [String] = []
+        var isInFence = false
+
+        for line in lines {
+            let trimmedLine = line.trimmingCharacters(in: .whitespaces)
+            let startsFence = trimmedLine.hasPrefix("```") || trimmedLine.hasPrefix("~~~")
+            let startsHeading = trimmedLine.hasPrefix("#")
+
+            if startsHeading, !current.isEmpty, !isInFence {
+                blocks.append(current.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines))
+                current = []
+            }
+
+            current.append(line)
+
+            if startsFence {
+                isInFence.toggle()
+            }
+
+            if trimmedLine.isEmpty, !current.isEmpty, !isInFence {
+                blocks.append(current.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines))
+                current = []
+            }
+        }
+
+        if !current.isEmpty {
+            blocks.append(current.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        return blocks.filter { !$0.isEmpty }
     }
 }
 
