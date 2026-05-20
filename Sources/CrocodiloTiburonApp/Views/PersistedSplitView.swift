@@ -39,13 +39,6 @@ struct PersistedHSplitView: NSViewRepresentable {
     func updateNSView(_ splitView: NSSplitView, context: Context) {
         context.coordinator.panes = panes
 
-        for (index, pane) in panes.enumerated() where index < splitView.subviews.count {
-            guard let hostingView = splitView.subviews[index] as? NSHostingView<AnyView> else {
-                continue
-            }
-            hostingView.rootView = pane.view
-        }
-
         context.coordinator.scheduleInitialLayout(for: splitView)
     }
 

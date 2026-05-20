@@ -69,8 +69,20 @@ extension FilingDocument {
         fileExtension == "pdf"
     }
 
+    var isXML: Bool {
+        fileExtension == "xml"
+    }
+
     var isTextLike: Bool {
         ["htm", "html", "txt", "xml"].contains(fileExtension)
+    }
+
+    var canExtractSections: Bool {
+        ["htm", "html", "txt"].contains(fileExtension)
+    }
+
+    var prefersMarkdownReader: Bool {
+        isXML
     }
 
     var isReaderDisplayable: Bool {

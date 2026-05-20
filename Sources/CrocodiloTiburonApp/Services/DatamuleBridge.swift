@@ -55,7 +55,7 @@ struct DatamuleBridge {
         try await run(arguments: ["documents", accession, "--cache-dir", cacheURL.path])
     }
 
-    func document(accession: String, documentType: String, filename: String, includeText: Bool = true) async throws -> DatamuleDocumentContentResponse {
+    func document(accession: String, documentType: String, filename: String, includeText: Bool = true, includeMarkdown: Bool = false) async throws -> DatamuleDocumentContentResponse {
         var arguments = [
             "document",
             accession,
@@ -65,6 +65,9 @@ struct DatamuleBridge {
         ]
         if includeText {
             arguments.append("--include-text")
+        }
+        if includeMarkdown {
+            arguments.append("--include-markdown")
         }
         return try await run(arguments: arguments)
     }
@@ -315,6 +318,7 @@ struct DatamuleDocumentContentResponse: Decodable, DatamuleBridgeResponse {
     let path: String?
     let html: String?
     let text: String?
+    let markdown: String?
 
     enum CodingKeys: String, CodingKey {
         case ok
@@ -325,6 +329,7 @@ struct DatamuleDocumentContentResponse: Decodable, DatamuleBridgeResponse {
         case path
         case html
         case text
+        case markdown
     }
 }
 

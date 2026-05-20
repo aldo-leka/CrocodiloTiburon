@@ -24,6 +24,7 @@ final class WorkspaceStore: ObservableObject {
     @Published var statusMessage: String = ""
     @Published var errorMessage: String?
     @Published var readerText: String = ""
+    @Published var readerMarkdown: String = ""
     @Published var readerPDFData: Data?
     @Published var isEditingNote: Bool = false
     @Published var editingNoteID: ResearchNote.ID?
@@ -111,6 +112,22 @@ final class WorkspaceStore: ObservableObject {
         readerText.trimmingCharacters(in: .whitespacesAndNewlines) == "None" ? "" : readerText
     }
 
+    var readerDisplayMarkdown: String {
+        readerMarkdown.trimmingCharacters(in: .whitespacesAndNewlines) == "None" ? "" : readerMarkdown
+    }
+
+    var readerDisplayContent: String {
+        let markdown = readerDisplayMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !markdown.isEmpty {
+            return readerDisplayMarkdown
+        }
+        return readerDisplayText
+    }
+
+    var hasMarkdownReaderContent: Bool {
+        !readerDisplayMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var isDocumentLoading: Bool {
         isLoadingReader || isLoadingDocuments
     }
@@ -124,7 +141,7 @@ final class WorkspaceStore: ObservableObject {
             || readerPDFData != nil
             || !readerDocuments.isEmpty
             || !sections.isEmpty
-            || !readerDisplayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !readerDisplayContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var filteredCompanies: [Company] {
@@ -134,6 +151,10 @@ final class WorkspaceStore: ObservableObject {
             $0.name.localizedCaseInsensitiveContains(query) ||
             $0.cik.localizedCaseInsensitiveContains(query)
         }
+    }
+
+    var openedCompanyIDs: Set<Company.ID> {
+        Set(filings.lazy.filter { $0.readStatus != .unread }.map(\.companyID))
     }
 
     var selectedCompanyFilings: [Filing] {
@@ -162,12 +183,6 @@ final class WorkspaceStore: ObservableObject {
             return "Select a company to load its filings and metadata."
         }
         return fallbackDescription(for: selectedCompany)
-    }
-
-    func companyHasOpenedFiling(_ company: Company) -> Bool {
-        filings.contains { filing in
-            filing.companyID == company.id && filing.readStatus != .unread
-        }
     }
 
     func focusSearch() {
@@ -416,28 +431,14 @@ final class WorkspaceStore: ObservableObject {
                 readerPDFData = try Data(contentsOf: exportedURL)
                 try? FileManager.default.removeItem(at: exportedURL)
                 readerText = ""
+                readerMarkdown = ""
                 sections = []
                 selectedSectionKey = ""
             } else {
-                let loaded = try await datamuleBridge.document(
-                    accession: filing.accession,
-                    documentType: document.type,
-                    filename: document.filename,
-                    includeText: true
-                )
-
-                guard shouldApplyReaderResult(
-                    filingID: expectedFilingID,
-                    documentID: expectedDocumentID,
-                    requestVersion: expectedReaderLoadVersion
-                ) else {
-                    return
-                }
-
                 readerPDFData = nil
-                readerText = cleanReaderText(loaded.text)
 
-                if let parsedSections = try? await datamuleBridge.sections(
+                if document.canExtractSections,
+                   let parsedSections = try? await datamuleBridge.sections(
                     accession: filing.accession,
                     documentType: document.type,
                     filename: document.filename
@@ -455,29 +456,51 @@ final class WorkspaceStore: ObservableObject {
                     } else {
                         selectedSectionKey = sections.first?.key ?? ""
                     }
+
+                    if let section = selectedSection,
+                       let sectionText = try? await datamuleBridge.section(
+                           accession: filing.accession,
+                           documentType: document.type,
+                           filename: document.filename,
+                           section: section.lookupKey,
+                           format: "text"
+                       ),
+                       !sectionText.sections.isEmpty {
+                        guard shouldApplyReaderResult(
+                            filingID: expectedFilingID,
+                            documentID: expectedDocumentID,
+                            requestVersion: expectedReaderLoadVersion
+                        ) else {
+                            return
+                        }
+                        readerText = cleanReaderText(sectionText.sections.joined(separator: "\n\n"))
+                        readerMarkdown = ""
+                        statusMessage = ""
+                        return
+                    }
                 } else {
                     sections = []
                     selectedSectionKey = ""
                 }
 
-                if let section = selectedSection,
-                   let sectionText = try? await datamuleBridge.section(
-                       accession: filing.accession,
-                       documentType: document.type,
-                       filename: document.filename,
-                       section: section.lookupKey,
-                       format: "text"
-                   ),
-                   !sectionText.sections.isEmpty {
-                    guard shouldApplyReaderResult(
-                        filingID: expectedFilingID,
-                        documentID: expectedDocumentID,
-                        requestVersion: expectedReaderLoadVersion
-                    ) else {
-                        return
-                    }
-                    readerText = cleanReaderText(sectionText.sections.joined(separator: "\n\n"))
+                let loaded = try await datamuleBridge.document(
+                    accession: filing.accession,
+                    documentType: document.type,
+                    filename: document.filename,
+                    includeText: !document.prefersMarkdownReader,
+                    includeMarkdown: document.prefersMarkdownReader
+                )
+
+                guard shouldApplyReaderResult(
+                    filingID: expectedFilingID,
+                    documentID: expectedDocumentID,
+                    requestVersion: expectedReaderLoadVersion
+                ) else {
+                    return
                 }
+
+                readerText = cleanReaderText(loaded.text)
+                readerMarkdown = cleanReaderText(loaded.markdown)
             }
 
             statusMessage = ""
@@ -491,6 +514,7 @@ final class WorkspaceStore: ObservableObject {
             }
             readerPDFData = nil
             readerText = ""
+            readerMarkdown = ""
             sections = []
             selectedSectionKey = ""
             errorMessage = error.localizedDescription
@@ -821,6 +845,7 @@ final class WorkspaceStore: ObservableObject {
         readerLoadVersion += 1
         readerPDFData = nil
         readerText = ""
+        readerMarkdown = ""
         sections = []
         selectedSectionKey = ""
     }

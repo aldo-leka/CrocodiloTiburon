@@ -18,6 +18,7 @@ import re
 import shutil
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -243,20 +244,42 @@ def submission_to_documents(submission: Any) -> list[dict[str, Any]]:
     return normalized
 
 
-def cmd_documents(args: argparse.Namespace) -> None:
+def compact_accession(accession: str) -> str:
+    return accession.replace("-", "")
+
+
+def matching_cached_submissions(cache_dir: Path, accession: str) -> list[Any]:
     _, Portfolio, _ = import_datamule()
-    cache_dir = Path(args.cache_dir).expanduser().resolve()
     clean_internal_cache_artifacts(cache_dir)
+    compact = compact_accession(accession)
+
+    try:
+        from datamule.submission.submission import Submission
+    except Exception:
+        Submission = None
+
+    if Submission is not None:
+        for candidate in (cache_dir / f"{compact}.tar", cache_dir / compact):
+            if candidate.exists():
+                return [capture_datamule(lambda: Submission(candidate))]
+
     portfolio = capture_datamule(lambda: Portfolio(str(cache_dir)))
-    matches = []
-    for submission in portfolio:
-        accession = getattr(submission, "accession", "")
-        if args.accession.replace("-", "") in accession.replace("-", ""):
-            matches.append({
-                "accession": accession,
-                "filing_date": getattr(submission, "filing_date", None),
-                "documents": submission_to_documents(submission),
-            })
+    return [
+        submission for submission in portfolio
+        if compact in compact_accession(getattr(submission, "accession", ""))
+    ]
+
+
+def cmd_documents(args: argparse.Namespace) -> None:
+    cache_dir = Path(args.cache_dir).expanduser().resolve()
+    matches = [
+        {
+            "accession": getattr(submission, "accession", ""),
+            "filing_date": getattr(submission, "filing_date", None),
+            "documents": submission_to_documents(submission),
+        }
+        for submission in matching_cached_submissions(cache_dir, args.accession)
+    ]
     emit({"ok": True, "count": len(matches), "submissions": matches})
 
 
@@ -286,15 +309,166 @@ def normalize_text(value: Any) -> str:
     return "" if text.strip() == "None" else text
 
 
-def cmd_document(args: argparse.Namespace) -> None:
-    _, Portfolio, _ = import_datamule()
-    cache_dir = Path(args.cache_dir).expanduser().resolve()
-    clean_internal_cache_artifacts(cache_dir)
-    portfolio = capture_datamule(lambda: Portfolio(str(cache_dir)))
-    for submission in portfolio:
-        accession = getattr(submission, "accession", "")
-        if args.accession.replace("-", "") not in accession.replace("-", ""):
+def local_xml_name(name: str) -> str:
+    return name.rsplit("}", 1)[-1] if "}" in name else name
+
+
+def label_from_xml_name(name: str) -> str:
+    label = local_xml_name(name)
+    special_labels = {
+        "noOfUnitsSold": "Number Of Units Sold",
+        "noOfUnitsOutstanding": "Number Of Units Outstanding",
+        "nameOfPersonfromWhomAcquired": "Name Of Person From Whom Acquired",
+        "nothingToReportFlagOnSecuritiesSoldInPast3Months": (
+            "Nothing To Report Flag On Securities Sold In Past 3 Months"
+        ),
+        "stateOrCountry": "State Or Country",
+    }
+    if label in special_labels:
+        return special_labels[label]
+    label = re.sub(r"[_-]+", " ", label)
+    label = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", label)
+    label = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", label)
+    label = re.sub(r"(?<=[A-Za-z])(?=\d)", " ", label)
+    label = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", label)
+    words = []
+    acronyms = {"ccc", "cik", "ein", "id", "sec", "zip"}
+    for word in label.split():
+        lowercased = word.lower()
+        if lowercased in acronyms:
+            words.append(lowercased.upper())
+        else:
+            words.append(word[:1].upper() + word[1:])
+    return " ".join(words)
+
+
+def element_text(element: ET.Element) -> str:
+    return " ".join(part.strip() for part in element.itertext() if part and part.strip())
+
+
+def text_from_xml_content(content: str) -> str:
+    if not content.lstrip().startswith("<"):
+        return ""
+
+    try:
+        root = ET.fromstring(content.encode("utf-8"))
+    except ET.ParseError:
+        return ""
+
+    lines: list[str] = []
+
+    def walk(element: ET.Element, depth: int = 0) -> None:
+        children = [child for child in list(element) if isinstance(child.tag, str)]
+        label = label_from_xml_name(element.tag)
+
+        if children:
+            if depth > 0:
+                if lines and lines[-1] != "":
+                    lines.append("")
+                lines.append(label)
+            for child in children:
+                walk(child, depth + 1)
+            return
+
+        value = element_text(element)
+        if value:
+            lines.append(f"{label}: {value}")
+
+    walk(root)
+    return "\n".join(lines).strip()
+
+
+def fallback_document_text(content: str) -> str:
+    return text_from_xml_content(content)
+
+
+def escape_markdown_text(value: Any) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ").strip()
+
+
+def xml_table_column_order(document_type: str | None, table_name: str) -> list[str]:
+    if not document_type:
+        return []
+
+    try:
+        from datamule.mapping_dicts import XML_MAPPING_DICTS_BY_TYPE
+    except Exception:
+        return []
+
+    table_spec = XML_MAPPING_DICTS_BY_TYPE.get(document_type, {}).get(table_name)
+    if not isinstance(table_spec, dict):
+        return []
+
+    if all(isinstance(key, str) and key.startswith("/") for key in table_spec):
+        candidates = table_spec.values()
+    else:
+        candidates = []
+        for key in ("carry", "columns"):
+            values = table_spec.get(key)
+            if isinstance(values, dict):
+                candidates.extend(values.values())
+
+    ordered = []
+    seen = set()
+    for candidate in candidates:
+        if candidate in seen:
             continue
+        ordered.append(candidate)
+        seen.add(candidate)
+    return ordered
+
+
+def xml_table_order(document_type: str | None) -> list[str]:
+    if not document_type:
+        return []
+
+    try:
+        from datamule.mapping_dicts import XML_MAPPING_DICTS_BY_TYPE
+    except Exception:
+        return []
+
+    mapping = XML_MAPPING_DICTS_BY_TYPE.get(document_type, {})
+    return list(mapping.keys()) if isinstance(mapping, dict) else []
+
+
+def fallback_document_markdown(document: Any, content: str) -> str:
+    table_blocks = []
+    tables = getattr(getattr(document, "tables", None), "tables", []) or []
+    table_order = xml_table_order(getattr(document, "type", None))
+    table_order_index = {name: index for index, name in enumerate(table_order)}
+    tables = sorted(
+        tables,
+        key=lambda table: table_order_index.get(getattr(table, "name", ""), len(table_order_index))
+    )
+
+    for table in tables:
+        rows = getattr(table, "data", []) or []
+        if not rows:
+            continue
+
+        table_name = label_from_xml_name(getattr(table, "name", "Table"))
+        table_key = getattr(table, "name", "")
+        column_order = xml_table_column_order(getattr(document, "type", None), table_key)
+        block = [f"## {table_name}"]
+        for row_index, row in enumerate(rows, 1):
+            if len(rows) > 1:
+                block.append(f"### Row {row_index}")
+            ordered_keys = [key for key in column_order if key in row]
+            ordered_keys += [key for key in row if key not in ordered_keys and key != "_table"]
+            for key in ordered_keys:
+                value = row.get(key)
+                if key == "_table" or value is None or str(value).strip() == "":
+                    continue
+                block.append(f"- **{label_from_xml_name(key)}:** {escape_markdown_text(value)}")
+        table_blocks.append("\n".join(block))
+
+    return "\n\n".join(table_blocks).strip() or fallback_document_text(content)
+
+
+def cmd_document(args: argparse.Namespace) -> None:
+    cache_dir = Path(args.cache_dir).expanduser().resolve()
+    for submission in matching_cached_submissions(cache_dir, args.accession):
+        accession = getattr(submission, "accession", "")
         document = find_document(submission, args.document_type, args.filename)
         if document is None:
             fail("No matching cached document found", code=2)
@@ -317,9 +491,11 @@ def cmd_document(args: argparse.Namespace) -> None:
                 "html": html,
             }
             if args.include_text:
-                payload["text"] = normalize_text(getattr(document, "text", ""))
+                text = normalize_text(getattr(document, "text", ""))
+                payload["text"] = text if text.strip() else fallback_document_text(html)
             if args.include_markdown:
-                payload["markdown"] = normalize_text(getattr(document, "markdown", ""))
+                markdown = normalize_text(getattr(document, "markdown", ""))
+                payload["markdown"] = markdown if markdown.strip() else fallback_document_markdown(document, html)
             return payload
 
         emit(capture_datamule(load_payload))
@@ -328,20 +504,15 @@ def cmd_document(args: argparse.Namespace) -> None:
 
 
 def cmd_export_document(args: argparse.Namespace) -> None:
-    _, Portfolio, _ = import_datamule()
     cache_dir = Path(args.cache_dir).expanduser().resolve()
-    clean_internal_cache_artifacts(cache_dir)
     output_root = (
         Path(args.output_dir).expanduser().resolve()
         if args.output_dir
         else Path(tempfile.gettempdir()) / "CrocodiloTiburon" / "ExportedDocuments"
     )
-    portfolio = capture_datamule(lambda: Portfolio(str(cache_dir)))
 
-    for submission in portfolio:
+    for submission in matching_cached_submissions(cache_dir, args.accession):
         accession = getattr(submission, "accession", "")
-        if args.accession.replace("-", "") not in accession.replace("-", ""):
-            continue
         document = find_document(submission, args.document_type, args.filename)
         if document is None:
             fail("No matching cached document found", code=2)
@@ -428,14 +599,9 @@ def collect_sections_from_node(node: Any, output: list[dict[str, Any]]) -> None:
 
 
 def cmd_sections(args: argparse.Namespace) -> None:
-    _, Portfolio, _ = import_datamule()
     cache_dir = Path(args.cache_dir).expanduser().resolve()
-    clean_internal_cache_artifacts(cache_dir)
-    portfolio = capture_datamule(lambda: Portfolio(str(cache_dir)))
-    for submission in portfolio:
+    for submission in matching_cached_submissions(cache_dir, args.accession):
         accession = getattr(submission, "accession", "")
-        if args.accession.replace("-", "") not in accession.replace("-", ""):
-            continue
         document = find_document(submission, args.document_type, args.filename)
         if document is None:
             fail("No matching cached document found", code=2)
@@ -467,14 +633,9 @@ def cmd_sections(args: argparse.Namespace) -> None:
 
 
 def cmd_section(args: argparse.Namespace) -> None:
-    _, Portfolio, _ = import_datamule()
     cache_dir = Path(args.cache_dir).expanduser().resolve()
-    clean_internal_cache_artifacts(cache_dir)
-    portfolio = capture_datamule(lambda: Portfolio(str(cache_dir)))
-    for submission in portfolio:
+    for submission in matching_cached_submissions(cache_dir, args.accession):
         accession = getattr(submission, "accession", "")
-        if args.accession.replace("-", "") not in accession.replace("-", ""):
-            continue
         document = find_document(submission, args.document_type, args.filename)
         if document is not None:
             sections = capture_datamule(lambda: document.get_section(title=args.section, format=args.format))

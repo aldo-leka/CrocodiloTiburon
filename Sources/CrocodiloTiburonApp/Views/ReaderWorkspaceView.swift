@@ -1,4 +1,5 @@
 import SwiftUI
+import MarkdownUI
 
 struct ReaderWorkspaceView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
@@ -89,24 +90,94 @@ struct FilingReaderView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if let pdfData = workspace.readerPDFData {
                     FilingPDFView(data: pdfData)
-                } else if !workspace.readerDisplayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                } else if !workspace.readerDisplayContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     ScrollView {
                         VStack(alignment: .leading, spacing: CTTheme.Spacing.xl) {
-                            Text(workspace.readerDisplayText)
-                                .font(CTTheme.Typography.reader)
-                                .foregroundStyle(CTTheme.body)
-                                .lineSpacing(6)
-                                .textSelection(.enabled)
+                            MarkdownReaderText(
+                                content: workspace.readerDisplayContent,
+                                renderMarkdown: workspace.hasMarkdownReaderContent
+                            )
+                            .equatable()
                         }
                         .padding(CTTheme.Spacing.xl)
                         .frame(maxWidth: 760, alignment: .leading)
                     }
                 } else {
-                    Color.clear
+                    ReaderEmptyDocumentView(document: workspace.selectedDocument)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+}
+
+private struct MarkdownReaderText: View, Equatable {
+    let content: String
+    let renderMarkdown: Bool
+    @State private var parsedMarkdown: MarkdownContent?
+    @State private var parsedMarkdownSource = ""
+
+    static func == (lhs: MarkdownReaderText, rhs: MarkdownReaderText) -> Bool {
+        lhs.content == rhs.content && lhs.renderMarkdown == rhs.renderMarkdown
+    }
+
+    var body: some View {
+        if renderMarkdown {
+            Group {
+                if parsedMarkdownSource == content, let parsedMarkdown {
+                    Markdown(parsedMarkdown)
+                        .markdownTheme(.gitHub)
+                        .textSelection(.enabled)
+                } else {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                }
+            }
+            .onAppear(perform: parseMarkdownIfNeeded)
+            .onChange(of: content) { _, _ in
+                parseMarkdownIfNeeded()
+            }
+            .onChange(of: renderMarkdown) { _, _ in
+                parseMarkdownIfNeeded()
+            }
+        } else {
+            Text(content)
+                .font(CTTheme.Typography.reader)
+                .foregroundStyle(CTTheme.body)
+                .lineSpacing(6)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func parseMarkdownIfNeeded() {
+        guard renderMarkdown else { return }
+        guard parsedMarkdownSource != content || parsedMarkdown == nil else { return }
+        parsedMarkdown = MarkdownContent(content)
+        parsedMarkdownSource = content
+    }
+}
+
+private struct ReaderEmptyDocumentView: View {
+    let document: FilingDocument?
+
+    var body: some View {
+        VStack(spacing: CTTheme.Spacing.sm) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 28, weight: .regular))
+                .foregroundStyle(CTTheme.muted)
+            Text("No readable preview")
+                .font(CTTheme.Typography.titleSmall)
+                .foregroundStyle(CTTheme.ink)
+            if let document {
+                Text(document.displayTitle)
+                    .font(CTTheme.Typography.body)
+                    .foregroundStyle(CTTheme.muted)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding(CTTheme.Spacing.xl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

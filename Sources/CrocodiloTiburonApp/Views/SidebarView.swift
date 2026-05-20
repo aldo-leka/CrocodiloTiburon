@@ -69,7 +69,10 @@ struct SidebarView: View {
         )
     }
 
+    @ViewBuilder
     private var companyList: some View {
+        let openedCompanyIDs = workspace.openedCompanyIDs
+
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: CTTheme.Spacing.xs, pinnedViews: [.sectionHeaders]) {
@@ -79,7 +82,7 @@ struct SidebarView: View {
                                 CompanyRow(
                                     company: company,
                                     isSelected: workspace.selectedCompanyID == company.id,
-                                    isDirty: workspace.companyHasOpenedFiling(company)
+                                    isDirty: openedCompanyIDs.contains(company.id)
                                 ) {
                                     workspace.selectCompany(company)
                                 }

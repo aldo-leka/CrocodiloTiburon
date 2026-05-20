@@ -33,12 +33,15 @@ struct CompanyWorkspaceView: View {
         }
     }
 
+    @ViewBuilder
     private var filingsSection: some View {
+        let filings = workspace.selectedCompanyFilings
+
         LazyVStack(spacing: 0) {
             FilingsToolbar()
             FilingsHeader()
-            if !workspace.selectedCompanyFilings.isEmpty {
-                ForEach(workspace.selectedCompanyFilings) { filing in
+            if !filings.isEmpty {
+                ForEach(filings) { filing in
                     FilingRow(filing: filing, isSelected: filing.id == workspace.selectedFilingID) {
                         workspace.selectFiling(filing)
                     }
