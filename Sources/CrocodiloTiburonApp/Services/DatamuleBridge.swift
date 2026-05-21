@@ -11,7 +11,7 @@ struct DatamuleBridge {
         let root = projectRoot ?? Self.findProjectRoot()
         self.projectRoot = root
         self.scriptURL = root.appendingPathComponent("tools/datamule_bridge.py")
-        self.cacheURL = cacheURL ?? root.appendingPathComponent("Data/SEC")
+        self.cacheURL = cacheURL ?? Self.defaultCacheURL(projectRoot: root)
         self.documentExportURL = documentExportURL
 
         let virtualEnvPython = root.appendingPathComponent(".venv/bin/python")
@@ -152,15 +152,51 @@ struct DatamuleBridge {
     }
 
     private static func findProjectRoot() -> URL {
-        var candidate = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        for _ in 0..<8 {
-            let script = candidate.appendingPathComponent("tools/datamule_bridge.py")
-            if FileManager.default.fileExists(atPath: script.path) {
-                return candidate
+        let fileManager = FileManager.default
+        if let rawProjectRoot = ProcessInfo.processInfo.environment["CROCODILO_PROJECT_ROOT"],
+           !rawProjectRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let projectRoot = URL(fileURLWithPath: rawProjectRoot, isDirectory: true)
+            if fileManager.fileExists(atPath: projectRoot.appendingPathComponent("tools/datamule_bridge.py").path) {
+                return projectRoot
             }
-            candidate.deleteLastPathComponent()
         }
-        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+
+        let candidates = [
+            URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true),
+            Bundle.main.bundleURL,
+            Bundle.main.executableURL?.deletingLastPathComponent()
+        ].compactMap { $0 }
+
+        for rootCandidate in candidates {
+            var candidate = rootCandidate
+            for _ in 0..<12 {
+                let script = candidate.appendingPathComponent("tools/datamule_bridge.py")
+                if fileManager.fileExists(atPath: script.path) {
+                    return candidate
+                }
+                candidate.deleteLastPathComponent()
+            }
+        }
+
+        return URL(fileURLWithPath: fileManager.currentDirectoryPath)
+    }
+
+    private static func defaultCacheURL(projectRoot: URL) -> URL {
+        let fileManager = FileManager.default
+        if let cacheRoot = try? fileManager.url(
+            for: .cachesDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ) {
+            let cacheURL = cacheRoot
+                .appendingPathComponent("CrocodiloTiburon", isDirectory: true)
+                .appendingPathComponent("SEC", isDirectory: true)
+            try? fileManager.createDirectory(at: cacheURL, withIntermediateDirectories: true)
+            return cacheURL
+        }
+
+        return projectRoot.appendingPathComponent("Data/SEC")
     }
 }
 

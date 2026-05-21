@@ -15,6 +15,7 @@ struct CompanyWorkspaceView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(CTTheme.canvas)
+        .accessibilityIdentifier(CTAccessibility.companyWorkspaceScroll)
     }
 
     private var companyHeader: some View {
@@ -25,6 +26,7 @@ struct CompanyWorkspaceView: View {
                 .lineLimit(2)
                 .minimumScaleFactor(0.82)
                 .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier(CTAccessibility.companyHeaderTitle)
             Text(workspace.selectedCompanyOverviewDescription)
                 .font(CTTheme.Typography.body)
                 .foregroundStyle(CTTheme.body)
@@ -37,20 +39,44 @@ struct CompanyWorkspaceView: View {
     private var filingsSection: some View {
         let filings = workspace.selectedCompanyFilings
 
-        LazyVStack(spacing: 0) {
-            FilingsToolbar()
-            FilingsHeader()
-            if !filings.isEmpty {
-                ForEach(filings) { filing in
-                    FilingRow(filing: filing, isSelected: filing.id == workspace.selectedFilingID) {
-                        workspace.selectFiling(filing)
+        VStack(spacing: 0) {
+            if isUITesting {
+                Text("Filing catalog")
+                    .frame(width: 1, height: 1)
+                    .opacity(0.01)
+                    .accessibilityIdentifier(CTAccessibility.filingsCatalog)
+                    .accessibilityValue(filingCatalogValue(for: filings))
+            }
+
+            LazyVStack(spacing: 0) {
+                FilingsToolbar()
+                FilingsHeader()
+                if !filings.isEmpty {
+                    ForEach(filings) { filing in
+                        FilingRow(filing: filing, isSelected: filing.id == workspace.selectedFilingID) {
+                            workspace.selectFiling(filing)
+                        }
+                        Hairline()
                     }
-                    Hairline()
                 }
             }
         }
         .background(CTTheme.surfaceSoft)
         .clipShape(RoundedRectangle(cornerRadius: CTTheme.Radius.lg, style: .continuous))
+        .accessibilityIdentifier(CTAccessibility.filingsList)
+    }
+
+    private var isUITesting: Bool {
+        ProcessInfo.processInfo.environment["CROCODILO_UI_TESTING"] == "1"
+    }
+
+    private func filingCatalogValue(for filings: [Filing]) -> String {
+        guard isUITesting else { return "" }
+        return filings.prefix(120)
+            .map { filing in
+                "\(filing.accession)|\(filing.id.uuidString.lowercased())|\(filing.companyID.uuidString.lowercased())"
+            }
+            .joined(separator: "\n")
     }
 }
 
@@ -67,6 +93,7 @@ private struct FilingsToolbar: View {
             .toggleStyle(.switch)
             .font(CTTheme.Typography.caption)
             .foregroundStyle(CTTheme.muted)
+            .accessibilityIdentifier(CTAccessibility.filingsOwnershipToggle)
         }
         .padding(.horizontal, CTTheme.Spacing.md)
         .padding(.vertical, CTTheme.Spacing.sm)
@@ -115,5 +142,10 @@ private struct FilingRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier(CTAccessibility.filingRow(accession: filing.accession))
+        .accessibilityLabel("\(filing.form) \(filing.filer ?? "")")
+        .accessibilityValue(
+            "\(filing.accession)|\(filing.id.uuidString.lowercased())|\(filing.companyID.uuidString.lowercased())"
+        )
     }
 }

@@ -53,6 +53,7 @@ struct SidebarView: View {
                 .focused($searchFocused)
                 .font(CTTheme.Typography.body)
                 .foregroundStyle(CTTheme.ink)
+                .accessibilityIdentifier(CTAccessibility.sidebarSearchField)
         }
         .padding(.horizontal, CTTheme.Spacing.md)
         .frame(height: 44)
@@ -95,14 +96,18 @@ struct SidebarView: View {
                 }
             }
             .scrollIndicators(.hidden)
+            .accessibilityIdentifier(CTAccessibility.sidebarCompanyList)
             .onAppear {
-                scrollToSelected(with: proxy)
+                scrollToPreferredCompany(with: proxy)
             }
             .onChange(of: workspace.selectedCompanyID) { _, _ in
-                scrollToSelected(with: proxy)
+                scrollToPreferredCompany(with: proxy)
+            }
+            .onChange(of: workspace.query) { _, _ in
+                scrollToPreferredCompany(with: proxy)
             }
             .onChange(of: workspace.filteredCompanies.count) { _, _ in
-                scrollToSelected(with: proxy)
+                scrollToPreferredCompany(with: proxy)
             }
         }
     }
@@ -123,18 +128,34 @@ struct SidebarView: View {
         }
     }
 
-    private func scrollToSelected(with proxy: ScrollViewProxy) {
-        guard let selectedCompanyID = workspace.selectedCompanyID else { return }
-        DispatchQueue.main.async {
+    private func scrollToPreferredCompany(with proxy: ScrollViewProxy) {
+        guard let targetID = preferredScrollCompanyID() else { return }
+        let anchor: UnitPoint = workspace.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .center : .top
+
+        Task { @MainActor in
             withAnimation(.easeInOut(duration: 0.2)) {
-                proxy.scrollTo(selectedCompanyID, anchor: .center)
+                proxy.scrollTo(targetID, anchor: anchor)
             }
         }
     }
 
+    private func preferredScrollCompanyID() -> Company.ID? {
+        let searchQuery = workspace.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !searchQuery.isEmpty else {
+            return workspace.selectedCompanyID
+        }
+
+        let exactMatch = workspace.filteredCompanies.first { company in
+            company.ticker.compare(searchQuery, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame ||
+            company.cik.compare(searchQuery, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }
+
+        return exactMatch?.id ?? workspace.filteredCompanies.first?.id
+    }
+
     private func focusSearchField() {
         activateAppWindow()
-        DispatchQueue.main.async {
+        Task { @MainActor in
             searchFocused = true
         }
     }
@@ -200,6 +221,9 @@ private struct CompanyRow: View {
             .clipShape(RoundedRectangle(cornerRadius: CTTheme.Radius.md, style: .continuous))
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier(CTAccessibility.companyRow(ticker: company.ticker))
+        .accessibilityLabel("\(company.ticker) \(company.name)")
+        .accessibilityValue("\(company.ticker)|\(company.id.uuidString.lowercased())")
     }
 
     private var rowBackground: Color {

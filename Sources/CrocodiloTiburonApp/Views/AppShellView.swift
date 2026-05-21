@@ -27,6 +27,8 @@ struct AppShellView: View {
                 )
             ]
         )
+        .accessibilityIdentifier(CTAccessibility.appShell)
+        .accessibilityValue("\(workspace.statusMessage)|\(workspace.errorMessage ?? "")")
         .background(CTTheme.canvas)
         .overlay(alignment: .topTrailing) {
             if workspace.isAppLoading {
@@ -45,5 +47,6 @@ private struct GlobalLoadingIndicator: View {
             .padding(CTTheme.Spacing.xs)
             .background(.regularMaterial)
             .clipShape(Circle())
+            .accessibilityIdentifier(CTAccessibility.appLoading)
     }
 }

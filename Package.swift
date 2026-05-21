@@ -27,6 +27,14 @@ let package = Package(
             resources: [
                 .process("Resources")
             ]
+        ),
+        .executableTarget(
+            name: "CrocodiloTiburonUITestRunner",
+            path: "tools/CrocodiloTiburonUITestRunner"
+        ),
+        .testTarget(
+            name: "CrocodiloTiburonTests",
+            path: "Tests/CrocodiloTiburonTests"
         )
     ]
 )

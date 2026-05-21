@@ -1,23 +1,25 @@
 import AppKit
 import SwiftUI
 
+@MainActor
+private enum CrocodiloTiburonAppEnvironment {
+    static let workspace = WorkspaceStore()
+}
+
 @main
 struct CrocodiloTiburonApp: App {
     @NSApplicationDelegateAdaptor(CrocodiloTiburonAppDelegate.self) private var appDelegate
-    @StateObject private var workspace = WorkspaceStore()
+    @StateObject private var workspace: WorkspaceStore
 
     init() {
+        _workspace = StateObject(wrappedValue: CrocodiloTiburonAppEnvironment.workspace)
         AppFontRegistry.registerFonts()
     }
 
     var body: some Scene {
-        WindowGroup {
-            AppShellView()
-                .environmentObject(workspace)
-                .frame(minWidth: 1240, minHeight: 780)
-                .background(AppActivationView())
+        Settings {
+            EmptyView()
         }
-        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Search Company") {
@@ -29,60 +31,74 @@ struct CrocodiloTiburonApp: App {
     }
 }
 
+@MainActor
 final class CrocodiloTiburonAppDelegate: NSObject, NSApplicationDelegate {
+    private var mainWindow: NSWindow?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        uiTestLog("applicationDidFinishLaunching")
         NSApp.setActivationPolicy(.regular)
-        activateAppWindow()
-    }
-
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        activateAppWindow()
-        return true
-    }
-}
-
-struct AppActivationView: NSViewRepresentable {
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        activateWhenWindowExists(for: view, coordinator: context.coordinator)
-        return view
-    }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        activateWhenWindowExists(for: view, coordinator: context.coordinator)
-    }
-
-    private func activateWhenWindowExists(for view: NSView, coordinator: Coordinator) {
-        guard !coordinator.didActivate else { return }
-
-        DispatchQueue.main.async {
-            guard let window = view.window else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                    activateWhenWindowExists(for: view, coordinator: coordinator)
-                }
-                return
-            }
-
-            coordinator.didActivate = true
-            NSApp.setActivationPolicy(.regular)
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+        showMainWindow()
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(100))
+            showMainWindow()
         }
     }
 
-    final class Coordinator {
-        var didActivate = false
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showMainWindow()
+        return true
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+
+    private func showMainWindow() {
+        uiTestLog("showMainWindow existing=\(mainWindow != nil)")
+        let window = mainWindow ?? makeMainWindow()
+        mainWindow = window
+
+        window.collectionBehavior.insert(.moveToActiveSpace)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+        NSRunningApplication.current.activate(options: [.activateAllWindows])
+        uiTestLog("ordered window visible=\(window.isVisible) windows=\(NSApp.windows.count)")
+    }
+
+    private func makeMainWindow() -> NSWindow {
+        uiTestLog("makeMainWindow")
+        let rootView = AppShellView()
+            .environmentObject(CrocodiloTiburonAppEnvironment.workspace)
+            .frame(minWidth: 1240, minHeight: 780)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1240, height: 780),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Crocodilo Tiburon"
+        window.titlebarAppearsTransparent = true
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: rootView)
+        window.setAccessibilityElement(true)
+        window.setAccessibilityRole(.window)
+        window.setAccessibilityTitle("Crocodilo Tiburon")
+        window.center()
+        return window
+    }
+
+    private func uiTestLog(_ message: String) {
+        guard ProcessInfo.processInfo.environment["CROCODILO_UI_TESTING"] == "1" else { return }
+        FileHandle.standardError.write(Data("[CrocodiloTiburon] \(message)\n".utf8))
     }
 }
 
+@MainActor
 func activateAppWindow() {
-    DispatchQueue.main.async {
-        NSApp.setActivationPolicy(.regular)
-        NSApp.windows.first?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
+    NSApp.setActivationPolicy(.regular)
+    NSApp.windows.first?.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
 }

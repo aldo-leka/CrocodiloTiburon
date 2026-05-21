@@ -8,6 +8,14 @@ final class WorkspaceStore: ObservableObject {
     private static let nonOwnershipSearchForms = ["-0", "-3", "-3/A", "-4", "-4/A", "-5", "-5/A"]
     private static let maxReaderContentCacheEntries = 24
 
+    private static func initialExcludeOwnershipReports() -> Bool {
+        if ProcessInfo.processInfo.environment["CROCODILO_INCLUDE_OWNERSHIP_REPORTS"] == "1" {
+            return false
+        }
+
+        return UserDefaults.standard.object(forKey: excludeOwnershipReportsKey) as? Bool ?? true
+    }
+
     @Published var companies: [Company] = []
     @Published var filings: [Filing] = []
     @Published var documents: [FilingDocument] = []
@@ -34,7 +42,7 @@ final class WorkspaceStore: ObservableObject {
     @Published var draftNoteTags: String = ""
     @Published var selectedCompanyProfileSummary: String = ""
     @Published var isLoadingCompanyProfile: Bool = false
-    @Published var excludeOwnershipReports: Bool = UserDefaults.standard.object(forKey: excludeOwnershipReportsKey) as? Bool ?? true
+    @Published var excludeOwnershipReports: Bool = WorkspaceStore.initialExcludeOwnershipReports()
 
     private let database: LocalDatabase?
     private var datamuleBridge = DatamuleBridge()
@@ -45,6 +53,8 @@ final class WorkspaceStore: ObservableObject {
     private var readerSectionsCache: [ReaderDocumentCacheKey: [ReaderSection]] = [:]
     private var readerContentCache: [ReaderContentCacheKey: ReaderContentPayload] = [:]
     private var readerContentCacheOrder: [ReaderContentCacheKey] = []
+    private var preparedReaderFilingAccessions = Set<String>()
+    private var uiTestCommandTask: Task<Void, Never>?
 
     init() {
         let initialCompanies = SampleData.companies
@@ -77,6 +87,7 @@ final class WorkspaceStore: ObservableObject {
             do {
                 try reloadFromDatabase(preferLastOpenedCompany: true)
                 prepareSelectedCompanyProfileLoad(selectionVersion: companySelectionVersion)
+                startSelectedDocumentContentLoadIfNeeded()
                 refreshSelectedCompanyFilingsIfNeeded(selectionVersion: companySelectionVersion)
                 statusMessage = "Datamule queue ready."
                 Task { await loadTickerUniverseIfNeeded() }
@@ -86,6 +97,8 @@ final class WorkspaceStore: ObservableObject {
         } else if let startupError {
             errorMessage = "SQLite failed to open; using in-memory sample data. \(startupError.localizedDescription)"
         }
+
+        startUITestCommandLoopIfNeeded()
     }
 
     var selectedCompany: Company? {
@@ -122,18 +135,58 @@ final class WorkspaceStore: ObservableObject {
 
     var readerDisplayContent: String {
         let markdown = readerDisplayMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        if shouldRenderMarkdownReaderContent {
+            return readerDisplayMarkdown
+        }
+
+        let text = readerDisplayText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty {
+            return readerDisplayText
+        }
+
         if !markdown.isEmpty {
             return readerDisplayMarkdown
         }
-        return readerDisplayText
+
+        return ""
+    }
+
+    var readerContentAccessibilityValue: String {
+        let documentID = selectedDocumentID?.uuidString.lowercased() ?? "none"
+        let filename = selectedDocument?.filename ?? "none"
+
+        if let readerPDFData {
+            return "pdf:\(documentID):\(filename):\(readerPDFData.count)"
+        }
+
+        let contentLength = readerDisplayContent.trimmingCharacters(in: .whitespacesAndNewlines).count
+        if contentLength > 0 {
+            let contentKind = hasMarkdownReaderContent ? "markdown" : "text"
+            return "\(contentKind):\(documentID):\(filename):\(contentLength)"
+        }
+
+        return "empty:\(documentID):\(filename):0"
     }
 
     var hasMarkdownReaderContent: Bool {
+        shouldRenderMarkdownReaderContent
+    }
+
+    private var shouldRenderMarkdownReaderContent: Bool {
         !readerDisplayMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var isDocumentLoading: Bool {
         isLoadingReader || isLoadingDocuments
+    }
+
+    var shouldShowReaderLoading: Bool {
+        if isLoadingReader { return true }
+
+        return isLoadingDocuments
+            && selectedDocument == nil
+            && readerPDFData == nil
+            && readerDisplayContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var isAppLoading: Bool {
@@ -149,11 +202,12 @@ final class WorkspaceStore: ObservableObject {
     }
 
     var filteredCompanies: [Company] {
-        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return companies }
+        let searchQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !searchQuery.isEmpty else { return companies }
         return companies.filter {
-            $0.ticker.localizedCaseInsensitiveContains(query) ||
-            $0.name.localizedCaseInsensitiveContains(query) ||
-            $0.cik.localizedCaseInsensitiveContains(query)
+            $0.ticker.localizedStandardContains(searchQuery) ||
+            $0.name.localizedStandardContains(searchQuery) ||
+            $0.cik.localizedStandardContains(searchQuery)
         }
     }
 
@@ -201,8 +255,9 @@ final class WorkspaceStore: ObservableObject {
         touchCompany(company.id)
         let firstFiling = selectedCompanyFilings.first
         selectedFilingID = firstFiling?.id
-        loadDocumentsForSelectedFiling()
+        loadDocumentsForSelectedFiling(preserveCurrentSelection: false)
         resetReaderPrompt()
+        startSelectedDocumentContentLoadIfNeeded()
         prepareSelectedCompanyProfileLoad(selectionVersion: selectionVersion)
 
         companyRefreshTask?.cancel()
@@ -212,12 +267,11 @@ final class WorkspaceStore: ObservableObject {
     func selectFiling(_ filing: Filing) {
         selectedFilingID = filing.id
         markFilingOpened(filing)
-        loadDocumentsForSelectedFiling()
+        loadDocumentsForSelectedFiling(preserveCurrentSelection: false)
         resetReaderPrompt()
 
         if selectedDocumentID != nil {
-            isLoadingReader = true
-            Task { await loadSelectedDocumentContent() }
+            startSelectedDocumentContentLoadIfNeeded()
         } else {
             isLoadingDocuments = true
             Task { await refreshSelectedFilingDocuments() }
@@ -225,24 +279,22 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func selectDocument(_ document: FilingDocument) {
-        if selectedDocumentID == document.id,
-           !document.isMainDocument,
-           let mainDocument = preferredReaderDocument(in: documents) {
-            selectedDocumentID = mainDocument.id
-        } else {
-            selectedDocumentID = document.id
+        guard selectedDocumentID != document.id else {
+            startSelectedDocumentContentLoadIfNeeded()
+            return
         }
-        isLoadingReader = true
+
+        selectedDocumentID = document.id
         if let filing = selectedFiling {
             markFilingOpened(filing)
         }
-        Task { await loadSelectedDocumentContent() }
+        startSelectedDocumentContentLoadIfNeeded()
     }
 
     func selectSection(_ section: ReaderSection) {
         selectedSectionKey = section.key
         if selectedDocument != nil {
-            Task { await loadSelectedDocumentContent() }
+            startSelectedDocumentContentLoadIfNeeded()
         }
     }
 
@@ -285,8 +337,9 @@ final class WorkspaceStore: ObservableObject {
         if let currentFilingID = selectedFilingID,
            !selectedCompanyFilings.contains(where: { $0.id == currentFilingID }) {
             selectedFilingID = selectedCompanyFilings.first?.id
-            loadDocumentsForSelectedFiling()
+            loadDocumentsForSelectedFiling(preserveCurrentSelection: false)
             resetReaderPrompt()
+            startSelectedDocumentContentLoadIfNeeded()
         }
 
         companyRefreshTask?.cancel()
@@ -314,19 +367,24 @@ final class WorkspaceStore: ObservableObject {
             )
             let fetchedFilings = filings(from: response.results, company: company)
             try database.upsertFilings(fetchedFilings)
-            let preferredFilingID = fetchedFilings.first?.id ?? selectedFilingID
 
             guard shouldApplyAsyncResult(companyID: company.id, selectionVersion: selectionVersion) else {
                 return
             }
 
-            try reloadFromDatabase(preferredCompanyID: company.id, preferredFilingID: preferredFilingID)
-            statusMessage = ""
-            await refreshSelectedFilingDocuments(
-                expectedCompanyID: company.id,
-                expectedFilingID: preferredFilingID,
-                selectionVersion: selectionVersion
+            try reloadFromDatabase(
+                preferredCompanyID: company.id,
+                preferredFilingID: selectedFilingID,
+                preferredDocumentID: selectedDocumentID
             )
+            statusMessage = ""
+            if let selectedFilingID {
+                await refreshSelectedFilingDocuments(
+                    expectedCompanyID: company.id,
+                    expectedFilingID: selectedFilingID,
+                    selectionVersion: selectionVersion
+                )
+            }
         } catch {
             guard shouldApplyAsyncResult(companyID: company.id, selectionVersion: selectionVersion) else {
                 return
@@ -404,21 +462,41 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func loadSelectedDocumentContent() async {
+        let requestVersion = beginReaderLoad()
+        await loadSelectedDocumentContent(requestVersion: requestVersion)
+    }
+
+    private func loadSelectedDocumentContent(requestVersion expectedReaderLoadVersion: Int) async {
         guard let filing = selectedFiling, let document = selectedDocument else {
             resetReaderPrompt()
             return
         }
-        readerLoadVersion += 1
-        let expectedReaderLoadVersion = readerLoadVersion
+        guard let company = company(id: filing.companyID) else {
+            resetReaderPrompt()
+            return
+        }
         let expectedFilingID = filing.id
         let expectedDocumentID = document.id
 
         isLoadingReader = true
         errorMessage = nil
         statusMessage = ""
-        defer { isLoadingReader = false }
+        defer {
+            if readerLoadVersion == expectedReaderLoadVersion {
+                isLoadingReader = false
+            }
+        }
 
         do {
+            try await prepareReaderFilingArchive(company: company, filing: filing)
+            guard shouldApplyReaderResult(
+                filingID: expectedFilingID,
+                documentID: expectedDocumentID,
+                requestVersion: expectedReaderLoadVersion
+            ) else {
+                return
+            }
+
             if document.isPDF {
                 let cacheKey = readerContentCacheKey(filing: filing, document: document, sectionKey: "")
                 if let cachedContent = cachedReaderContent(for: cacheKey) {
@@ -523,16 +601,23 @@ final class WorkspaceStore: ObservableObject {
                             return
                         }
 
-                        let sectionMarkdown = try? await datamuleBridge.section(
-                            accession: filing.accession,
-                            documentType: document.type,
-                            filename: document.filename,
-                            section: section.lookupKey,
-                            format: "markdown"
-                        )
-                        let markdown = cleanReaderText(sectionMarkdown?.sections.joined(separator: "\n\n"))
+                        let sectionFormats: [(format: String, isMarkdown: Bool)] = document.prefersMarkdownReader
+                            ? [("markdown", true), ("text", false)]
+                            : [("text", false), ("markdown", true)]
 
-                        if !markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        for sectionFormat in sectionFormats {
+                            let sectionContent = try? await datamuleBridge.section(
+                                accession: filing.accession,
+                                documentType: document.type,
+                                filename: document.filename,
+                                section: section.lookupKey,
+                                format: sectionFormat.format
+                            )
+                            let content = cleanReaderText(sectionContent?.sections.joined(separator: "\n\n"))
+                            guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                                continue
+                            }
+
                             guard shouldApplyReaderResult(
                                 filingID: expectedFilingID,
                                 documentID: expectedDocumentID,
@@ -540,33 +625,11 @@ final class WorkspaceStore: ObservableObject {
                             ) else {
                                 return
                             }
-                            let payload = ReaderContentPayload(pdfData: nil, text: "", markdown: markdown)
-                            readerText = payload.text
-                            readerMarkdown = payload.markdown
-                            cacheReaderContent(payload, for: cacheKey)
-                            statusMessage = ""
-                            return
-                        }
 
-                        if let sectionText = try? await datamuleBridge.section(
-                            accession: filing.accession,
-                            documentType: document.type,
-                            filename: document.filename,
-                            section: section.lookupKey,
-                            format: "text"
-                        ),
-                           !sectionText.sections.isEmpty {
-                            guard shouldApplyReaderResult(
-                                filingID: expectedFilingID,
-                                documentID: expectedDocumentID,
-                                requestVersion: expectedReaderLoadVersion
-                            ) else {
-                                return
-                            }
                             let payload = ReaderContentPayload(
                                 pdfData: nil,
-                                text: cleanReaderText(sectionText.sections.joined(separator: "\n\n")),
-                                markdown: ""
+                                text: sectionFormat.isMarkdown ? "" : content,
+                                markdown: sectionFormat.isMarkdown ? content : ""
                             )
                             readerText = payload.text
                             readerMarkdown = payload.markdown
@@ -754,11 +817,7 @@ final class WorkspaceStore: ObservableObject {
             filingsForCompany.contains(where: { $0.id == id }) ? id : nil
         } ?? filingsForCompany.first?.id
 
-        loadDocumentsForSelectedFiling()
-
-        selectedDocumentID = previousDocumentID.flatMap { id in
-            documents.contains(where: { $0.id == id }) ? id : nil
-        } ?? preferredReaderDocument(in: documents)?.id
+        loadDocumentsForSelectedFiling(preferredDocumentID: previousDocumentID)
 
         sections = []
     }
@@ -868,6 +927,19 @@ final class WorkspaceStore: ObservableObject {
             && readerLoadVersion == requestVersion
     }
 
+    private func prepareReaderFilingArchive(company: Company, filing: Filing) async throws {
+        guard !preparedReaderFilingAccessions.contains(filing.accession) else { return }
+
+        let filingDate = dayString(filing.filingDate)
+        _ = try await datamuleBridge.download(
+            ticker: company.ticker,
+            forms: [filing.form],
+            start: filingDate,
+            end: filingDate
+        )
+        preparedReaderFilingAccessions.insert(filing.accession)
+    }
+
     private func prepareSelectedCompanyProfileLoad(selectionVersion: Int) {
         guard let company = selectedCompany else {
             selectedCompanyProfileSummary = ""
@@ -937,7 +1009,10 @@ final class WorkspaceStore: ObservableObject {
         return "\(company.name) is an SEC filer\(exchange.isEmpty ? "" : " listed on \(exchange)") classified as \(industry)."
     }
 
-    private func loadDocumentsForSelectedFiling() {
+    private func loadDocumentsForSelectedFiling(
+        preferredDocumentID: FilingDocument.ID? = nil,
+        preserveCurrentSelection: Bool = true
+    ) {
         guard let database, let selectedFilingID else {
             documents = []
             selectedDocumentID = nil
@@ -945,13 +1020,28 @@ final class WorkspaceStore: ObservableObject {
         }
 
         do {
+            let documentIDToPreserve = preferredDocumentID ?? (preserveCurrentSelection ? selectedDocumentID : nil)
             documents = try database.fetchDocuments(filingID: selectedFilingID)
-            selectedDocumentID = preferredReaderDocument(in: documents)?.id
+            selectedDocumentID = documentIDToPreserve.flatMap { id in
+                documents.contains(where: { $0.id == id }) ? id : nil
+            } ?? preferredReaderDocument(in: documents)?.id
         } catch {
             documents = []
             selectedDocumentID = nil
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func startSelectedDocumentContentLoadIfNeeded() {
+        guard selectedDocument != nil else { return }
+        let requestVersion = beginReaderLoad()
+        Task { await loadSelectedDocumentContent(requestVersion: requestVersion) }
+    }
+
+    private func beginReaderLoad() -> Int {
+        readerLoadVersion += 1
+        isLoadingReader = true
+        return readerLoadVersion
     }
 
     private func preferredReaderDocument(in documents: [FilingDocument]) -> FilingDocument? {
@@ -966,6 +1056,51 @@ final class WorkspaceStore: ObservableObject {
         readerMarkdown = ""
         sections = []
         selectedSectionKey = ""
+    }
+
+    private func startUITestCommandLoopIfNeeded() {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["CROCODILO_UI_TESTING"] == "1",
+              let path = environment["CROCODILO_UI_SEARCH_COMMAND_PATH"],
+              !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return
+        }
+
+        let commandURL = URL(fileURLWithPath: path)
+        uiTestCommandTask = Task { [weak self] in
+            var lastCommand = ""
+            while !Task.isCancelled {
+                if let rawCommand = try? String(contentsOf: commandURL, encoding: .utf8) {
+                    let command = rawCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !command.isEmpty, command != lastCommand {
+                        lastCommand = command
+                        await MainActor.run {
+                            self?.handleUITestCommand(command)
+                        }
+                    }
+                }
+
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+        }
+    }
+
+    private func handleUITestCommand(_ command: String) {
+        if command.hasPrefix("search:") {
+            query = String(command.dropFirst("search:".count))
+            return
+        }
+
+        if command.hasPrefix("filing:") {
+            let idValue = String(command.dropFirst("filing:".count))
+            if let filingID = UUID(uuidString: idValue), let filing = filing(id: filingID) {
+                selectFiling(filing)
+            }
+            return
+        }
+
+        query = command
     }
 
     private func filings(from hits: [DatamuleFilingHit], company: Company) -> [Filing] {

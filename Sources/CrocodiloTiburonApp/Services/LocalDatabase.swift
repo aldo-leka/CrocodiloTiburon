@@ -20,6 +20,14 @@ final class LocalDatabase {
 
     static func appDatabase() throws -> LocalDatabase {
         let fileManager = FileManager.default
+
+        if let path = ProcessInfo.processInfo.environment["CROCODILO_DATABASE_PATH"],
+           !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let url = URL(fileURLWithPath: path)
+            try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            return try LocalDatabase(url: url)
+        }
+
         let supportURL = try fileManager.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,

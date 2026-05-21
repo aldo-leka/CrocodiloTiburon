@@ -63,6 +63,7 @@ struct SectionRailView: View {
                         .clipShape(RoundedRectangle(cornerRadius: CTTheme.Radius.md, style: .continuous))
                     }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier(CTAccessibility.readerSectionButton(key: section.key))
                 }
             }
             Spacer()
@@ -77,19 +78,22 @@ struct FilingReaderView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if !workspace.readerAttachments.isEmpty {
+            if !workspace.readerDocuments.isEmpty {
                 AttachmentStripView()
                     .environmentObject(workspace)
                 Hairline()
             }
             Group {
-                if workspace.isDocumentLoading {
+                if workspace.shouldShowReaderLoading {
                     ProgressView()
                         .progressViewStyle(.circular)
                         .controlSize(.large)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityIdentifier(CTAccessibility.readerLoading)
                 } else if let pdfData = workspace.readerPDFData {
-                    FilingPDFView(data: pdfData)
+                    FilingPDFView(data: pdfData, accessibilityValue: workspace.readerContentAccessibilityValue)
+                        .accessibilityIdentifier(CTAccessibility.readerPDF)
+                        .accessibilityValue(workspace.readerContentAccessibilityValue)
                 } else if !workspace.readerDisplayContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     ScrollView {
                         VStack(alignment: .leading, spacing: CTTheme.Spacing.xl) {
@@ -102,8 +106,11 @@ struct FilingReaderView: View {
                         .padding(CTTheme.Spacing.xl)
                         .frame(maxWidth: 760, alignment: .leading)
                     }
+                    .accessibilityIdentifier(CTAccessibility.readerText)
+                    .accessibilityValue(workspace.readerContentAccessibilityValue)
                 } else {
                     ReaderEmptyDocumentView(document: workspace.selectedDocument)
+                        .accessibilityValue(workspace.readerContentAccessibilityValue)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -316,6 +323,7 @@ private struct ReaderEmptyDocumentView: View {
         }
         .padding(CTTheme.Spacing.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier(CTAccessibility.readerEmpty)
     }
 }
 
@@ -323,9 +331,9 @@ private struct AttachmentStripView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        ScrollView(.horizontal) {
             HStack(spacing: CTTheme.Spacing.xs) {
-                ForEach(workspace.readerAttachments) { document in
+                ForEach(workspace.readerDocuments) { document in
                     Button {
                         workspace.selectDocument(document)
                     } label: {
@@ -348,11 +356,18 @@ private struct AttachmentStripView: View {
                         }
                     }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier(CTAccessibility.readerDocumentButton(id: document.id))
+                    .accessibilityLabel(document.displayTitle)
+                    .accessibilityValue(
+                        "\(document.filename)|\(document.id.uuidString.lowercased())|\(document.filingID.uuidString.lowercased())"
+                    )
                 }
             }
             .padding(.horizontal, CTTheme.Spacing.lg)
             .padding(.vertical, CTTheme.Spacing.sm)
         }
+        .scrollIndicators(.hidden)
         .background(CTTheme.canvas)
+        .accessibilityIdentifier(CTAccessibility.readerDocumentStrip)
     }
 }

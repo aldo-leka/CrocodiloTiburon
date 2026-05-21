@@ -46,6 +46,15 @@ python tools/datamule_bridge.py resolve AAPL
 python tools/datamule_bridge.py search AAPL --forms 10-K 10-Q 8-K --start 2024-01-01 --end 2026-12-31
 ```
 
+## Run the reader UI stress test
+
+```bash
+make ui-smoke
+make ui-stress
+```
+
+The smoke run opens ticker `A` and verifies reader document switching. The stress run uses the 100 ticker fixture in `Tests/CrocodiloTiburonUITests/Fixtures/StressTickers.txt` and verifies 100 reader documents per ticker.
+
 ## Repo map
 
 ```text
