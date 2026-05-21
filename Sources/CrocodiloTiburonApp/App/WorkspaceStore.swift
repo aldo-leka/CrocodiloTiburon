@@ -135,7 +135,7 @@ final class WorkspaceStore: ObservableObject {
 
     var readerDisplayContent: String {
         let markdown = readerDisplayMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
-        if shouldRenderMarkdownReaderContent {
+        if !markdown.isEmpty {
             return readerDisplayMarkdown
         }
 
@@ -144,11 +144,11 @@ final class WorkspaceStore: ObservableObject {
             return readerDisplayText
         }
 
-        if !markdown.isEmpty {
-            return readerDisplayMarkdown
-        }
-
         return ""
+    }
+
+    var isReaderDisplayContentMarkdown: Bool {
+        !readerDisplayMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var readerContentAccessibilityValue: String {
@@ -161,19 +161,11 @@ final class WorkspaceStore: ObservableObject {
 
         let contentLength = readerDisplayContent.trimmingCharacters(in: .whitespacesAndNewlines).count
         if contentLength > 0 {
-            let contentKind = hasMarkdownReaderContent ? "markdown" : "text"
+            let contentKind = isReaderDisplayContentMarkdown ? "markdown" : "text"
             return "\(contentKind):\(documentID):\(filename):\(contentLength)"
         }
 
         return "empty:\(documentID):\(filename):0"
-    }
-
-    var hasMarkdownReaderContent: Bool {
-        shouldRenderMarkdownReaderContent
-    }
-
-    private var shouldRenderMarkdownReaderContent: Bool {
-        !readerDisplayMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var isDocumentLoading: Bool {
@@ -601,9 +593,10 @@ final class WorkspaceStore: ObservableObject {
                             return
                         }
 
-                        let sectionFormats: [(format: String, isMarkdown: Bool)] = document.prefersMarkdownReader
-                            ? [("markdown", true), ("text", false)]
-                            : [("text", false), ("markdown", true)]
+                        let sectionFormats: [(format: String, isMarkdown: Bool)] = [
+                            ("markdown", true),
+                            ("text", false)
+                        ]
 
                         for sectionFormat in sectionFormats {
                             let sectionContent = try? await datamuleBridge.section(

@@ -13,15 +13,13 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.29.3"),
-        .package(url: "https://github.com/gonzalezreal/textual", from: "0.3.1")
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.29.3")
     ],
     targets: [
         .executableTarget(
             name: "CrocodiloTiburonApp",
             dependencies: [
-                .product(name: "GRDB", package: "GRDB.swift"),
-                .product(name: "Textual", package: "textual")
+                .product(name: "GRDB", package: "GRDB.swift")
             ],
             path: "Sources/CrocodiloTiburonApp",
             resources: [

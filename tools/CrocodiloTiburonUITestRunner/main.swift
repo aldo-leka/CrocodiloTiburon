@@ -599,9 +599,7 @@ struct AccessibilityStressTest {
 
         for bundleName in [
             "CrocodiloTiburon_CrocodiloTiburonApp.bundle",
-            "GRDB_GRDB.bundle",
-            "swiftui-math_SwiftUIMath.bundle",
-            "textual_Textual.bundle"
+            "GRDB_GRDB.bundle"
         ] {
             let sourceURL = productsURL.appending(path: bundleName, directoryHint: .isDirectory)
             let destinationURL = bundleURL.appending(path: bundleName, directoryHint: .isDirectory)

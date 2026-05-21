@@ -81,10 +81,6 @@ extension FilingDocument {
         ["htm", "html", "txt"].contains(fileExtension)
     }
 
-    var prefersMarkdownReader: Bool {
-        isTextLike
-    }
-
     var isReaderDisplayable: Bool {
         isMainDocument || isPDF || (isTextLike && !isSECResourceFile)
     }
